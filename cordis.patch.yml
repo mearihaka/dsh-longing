@@ -1,0 +1,7 @@
+# dsh-longing —— DSH bundle patch
+# 挂载声明：DSH 启动时把本插件插进 profile 的配置树。
+# name 必须与安装后的包名一致（dsh-longing），否则会「装上了但设置页/面板找不到」。
+
+- insert:
+    - id: dsh-longing
+      name: dsh-longing

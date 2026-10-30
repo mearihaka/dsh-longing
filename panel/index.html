@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>角色 · 欲望面板</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html,body { min-height:100%; margin:0; font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif; }
+  body { background:url("/dsh-longing/wallpaper.jpg") center/cover no-repeat fixed; color:#eaf1ff; }
+  body::before { content:""; position:fixed; inset:0; background:
+    linear-gradient(100deg, rgba(3,7,18,.94) 0%, rgba(3,7,18,.78) 38%, rgba(3,7,18,.32) 62%, rgba(3,7,18,.55) 100%),
+    radial-gradient(120% 80% at 70% 20%, rgba(90,160,255,.18), transparent 60%); }
+  .clock { position:relative; text-align:left; margin:0 0 18px; }
+  .clock .time { font-size:52px; font-weight:200; letter-spacing:2px; line-height:1; text-shadow:0 6px 30px rgba(80,150,255,.35); }
+  .clock .date { color:#9fb3d9; font-size:13px; margin-top:8px; letter-spacing:1px; }
+  .wrap { position:relative; max-width:1440px; margin:0 auto; padding:34px 18px 70px; }
+  .content { max-width:660px; }
+  @media (max-width: 900px) { .content { max-width:100%; } }
+  h1 { margin:0 0 4px; font-size:22px; }
+  .sub { color:#9fb3d9; font-size:13px; margin-bottom:20px; }
+  .card { background:rgba(10,17,34,.6); border:1px solid rgba(130,170,255,.16); border-radius:18px; padding:18px 20px; margin-bottom:14px; backdrop-filter:blur(18px) saturate(120%); box-shadow:0 20px 60px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.05); }
+  h2 { font-size:13px; margin:0 0 12px; color:#a9c4ff; letter-spacing:.6px; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:16px; margin:10px 0; }
+  .label { font-size:14px; color:#cfe0ff; }
+  .val { font-variant-numeric:tabular-nums; font-weight:600; font-size:18px; min-width:46px; text-align:right; }
+  input[type=range] { -webkit-appearance:none; width:100%; height:6px; border-radius:6px; background:rgba(255,255,255,.16); outline:none; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:20px; height:20px; border-radius:50%; background:radial-gradient(circle at 35% 35%,#9fd0ff,#4a8dff); box-shadow:0 0 12px rgba(90,150,255,.9); cursor:pointer; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px 18px; }
+  .field { display:flex; flex-direction:column; gap:6px; }
+  .field span { font-size:12px; color:#9fb3d9; }
+  input[type=text], input[type=number], textarea { background:rgba(9,15,30,.78); border:1px solid rgba(120,160,255,.22); color:#eaf1ff; padding:8px 10px; border-radius:9px; font-size:14px; font-family:inherit; }
+  .ovr { border-color:rgba(255,190,90,.65) !important; box-shadow:0 0 0 1px rgba(255,190,90,.25); }
+  textarea { min-height:84px; resize:vertical; width:100%; }
+  .check { display:flex; align-items:center; gap:8px; font-size:14px; color:#cfe0ff; }
+  .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  button { background:linear-gradient(180deg,#3f7dff,#2b5fd9); color:#fff; border:0; padding:9px 15px; border-radius:10px; cursor:pointer; font-size:14px; }
+  button.ghost { background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.14); }
+  button.danger { background:linear-gradient(180deg,#ff5d6c,#c9303f); }
+  .muted { color:#8ea3c8; font-size:12px; line-height:1.7; }
+  .pill { display:inline-block; padding:3px 10px; border-radius:999px; background:rgba(90,150,255,.18); border:1px solid rgba(120,170,255,.35); font-size:12px; }
+  .ok { color:#7ee2a8; } .warn { color:#ffb3b3; }
+  canvas { width:100%; height:160px; display:block; border-radius:12px; background:rgba(5,10,22,.55); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="clock">
+    <div class="time" id="clockTime">--:--</div>
+    <div class="date" id="clockDate"></div>
+  </div>
+  <h1>角色 · 欲望面板</h1>
+  <div class="sub">由插件自带，改完立即生效。 <span id="mode" class="pill">加载中…</span> <span id="paused" class="pill" style="display:none">已暂停</span></div>
+
+  <div class="content">
+  <div class="card" id="authCard">
+    <h2>面板令牌</h2>
+    <div class="bar">
+      <input type="text" id="token" placeholder="粘贴 面板令牌.txt 里的内容" style="flex:1" />
+      <button id="saveToken">解锁面板</button>
+      <span id="authMsg" class="muted"></span>
+    </div>
+    <p class="muted">令牌在本机 <code>欲望状态.json</code> 同目录的 <code>面板令牌.txt</code>，只存在本地。</p>
+  </div>
+
+  <div class="card">
+    <h2>当前状态</h2>
+    <div class="row"><div class="label">性欲 lust</div><div class="val" id="v-lust">–</div></div>
+    <input type="range" id="lust" min="0" max="100" step="1" />
+    <div class="row"><div class="label">色情值 lewd</div><div class="val" id="v-lewd">–</div></div>
+    <input type="range" id="lewd" min="0" max="100" step="1" />
+    <div class="row"><div class="label">占有值 possess</div><div class="val" id="v-possess">–</div></div>
+    <input type="range" id="possess" min="0" max="100" step="1" />
+    <div class="row"><div class="label">羞耻度 shame</div><div class="val" id="v-shame">–</div></div>
+    <input type="range" id="shame" min="0" max="100" step="1" />
+    <div class="row"><div class="label">理智 resist</div><div class="val" id="v-resist">–</div></div>
+    <input type="range" id="resist" min="0" max="100" step="1" />
+    <div class="row"><div class="label">疲劳 fatigue</div><div class="val" id="v-fatigue">–</div></div>
+    <input type="range" id="fatigue" min="0" max="100" step="1" />
+    <div class="row"><div class="label">当前场景</div><input type="text" id="scene" placeholder="卧室 / 办公室 / 被窝" style="max-width:220px" /></div>
+    <div class="bar" style="margin-top:14px">
+      <button id="save">保存状态</button>
+      <button class="ghost" data-preset="calm">平静</button>
+      <button class="ghost" data-preset="clingy">黏人</button>
+      <button class="ghost" data-preset="heat">发情</button>
+      <button class="ghost" data-preset="yandere">病娇狂暴</button>
+      <button class="danger" id="pause">暂停 2 小时</button>
+      <span id="msg" class="muted"></span>
+    </div>
+  </div>
+
+  <div class="card" id="curveCard">
+    <h2>24 小时曲线</h2>
+    <canvas id="curve" width="900" height="160"></canvas>
+    <p class="muted">蓝=性欲，粉=色情，金=占有；最近 24 小时，每分钟一个点。</p>
+  </div>
+
+  <div class="card">
+    <h2>时间曲线</h2>
+    <div class="grid">
+      <label class="field"><span>睡前高峰时段</span><input type="text" id="peakWindow" placeholder="22:00-02:00" /></label>
+      <label class="field"><span>高峰加成 (+)</span><input type="number" id="peakBonus" min="0" max="50" /></label>
+      <label class="field"><span>每小时衰减</span><input type="number" id="decayPerHour" min="0" max="30" /></label>
+      <label class="field"><span>睡眠时段衰减</span><input type="number" id="nightDecayPerHour" min="0" max="30" /></label>
+      <label class="field"><span>生效时段</span><input type="text" id="activeHours" placeholder="08:00-02:00" /></label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>主动行为</h2>
+    <div class="grid">
+      <label class="check"><input type="checkbox" id="autoInitiate" /> 主动开口（冷场时她自己发消息）</label>
+      <details class="adv"><summary>高级（通道 / 账号 / 时段）</summary>
+      <label class="field"><span>主动通道</span>
+        <select id="proactiveMode" style="background:rgba(9,15,30,.78);border:1px solid rgba(120,160,255,.22);color:#eaf1ff;padding:8px 10px;border-radius:9px">
+          <option value="auto">自动（优先 HTTP，失败写文件）</option>
+          <option value="off">关闭</option>
+          <option value="file">只写文件</option>
+          <option value="http">只走 OneBot HTTP</option>
+        </select>
+      </label>
+      <label class="field"><span>OneBot HTTP 地址</span><input type="text" id="onebotHttpBase" placeholder="http://127.0.0.1:3000" /></label>
+      <label class="field"><span>OneBot Token</span><input type="text" id="onebotToken" placeholder="可空" /></label>
+      <label class="field"><span>主人账号 ID（逗号分隔）</span><input type="text" id="ownerIds" placeholder="123456789" /></label>
+      <label class="field"><span>安静时段</span><input type="text" id="quietHours" placeholder="02:00-08:00" /></label>
+      </details>
+      <label class="field"><span>多久没说话才主动（分钟）</span><input type="number" id="idleTriggerMin" min="1" max="240" /></label>
+      <label class="field"><span>两次主动间隔（分钟）</span><input type="number" id="proactiveCooldownMin" min="5" max="720" /></label>
+      <label class="field"><span>每小时主动上限</span><input type="number" id="proactivePerHour" min="0" max="10" /></label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>强度与功能</h2>
+    <div class="grid">
+      <label class="field"><span>露骨门槛</span><input type="number" id="explicitThreshold" min="0" max="100" /></label>
+      <label class="field"><span>主动要图门槛</span><input type="number" id="imageThreshold" min="0" max="200" /></label>
+      <label class="field"><span>每天主动发图上限</span><input type="number" id="imagesPerDay" min="0" max="20" /></label>
+      <label class="check"><input type="checkbox" id="nsfwImages" /> 允许成人向图片</label>
+      <label class="check"><input type="checkbox" id="curveEnabled" /> 显示曲线</label>
+      <label class="check"><input type="checkbox" id="presetsEnabled" /> 显示预设按钮</label>
+      <label class="check"><input type="checkbox" id="voiceEnabled" /> 发情时发语音</label>
+      <label class="check"><input type="checkbox" id="memoryEnabled" /> 事后记忆</label>
+      <label class="check"><input type="checkbox" id="scheduleEnabled" /> 按时段限制</label>
+      <label class="check"><input type="checkbox" id="pauseEnabled" /> 允许暂停</label>
+      <label class="check"><input type="checkbox" id="stealthInjection" /> 用第一人称心理活动注入</label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>通道绑定</h2>
+    <div class="grid">
+      <label class="check"><input type="checkbox" id="ch-qq" data-channel="qq" /> QQ</label>
+      <label class="check"><input type="checkbox" id="ch-bili" data-channel="bili" /> B 站</label>
+      <label class="check"><input type="checkbox" id="ch-web" data-channel="web" /> Web / 其它</label>
+    </div>
+    <p class="muted">只对勾选的通道注入；没勾的不受影响。</p>
+  </div>
+
+  <div class="card">
+    <h2>生图后端（ComfyUI）</h2>
+    <div class="row"><div class="label">状态</div><div class="val" id="comfyState" style="font-size:14px">检测中…</div></div>
+    <div class="grid">
+      <label class="field"><span>地址</span><input type="text" id="comfyBaseUrl" placeholder="http://127.0.0.1:8188" /></label>
+      <label class="field"><span>启动脚本路径（.ps1 / .bat / .exe）</span><input type="text" id="comfyLaunchScript" placeholder="<path>\\ComfyUI-Data\\comfy-launch.ps1" /></label>
+      <label class="field"><span>探测间隔（秒）</span><input type="number" id="comfyProbeSec" min="15" max="600" /></label>
+      <label class="check"><input type="checkbox" id="comfyEnabled" /> 启用探测</label>
+      <label class="check"><input type="checkbox" id="comfyAutoLaunch" /> 检测不到时自动拉起</label>
+    </div>
+    <div class="bar" style="margin-top:12px">
+      <button id="launchComfy" class="ghost">现在拉起</button>
+      <span id="comfyMsg" class="muted"></span>
+    </div>
+    <p class="muted">后端没开时不影响聊天：她会说「图床没开」，不会反复重试。</p>
+  </div>
+
+  <div class="card">
+    <h2>人设补丁</h2>
+    <textarea id="personaNote" placeholder="例：只在私聊里主动；被拒绝会闹脾气；不喜欢被叫妹妹以外的称呼。"></textarea>
+    <p class="muted">写在这里的话会跟欲望状态一起注入到提示词里，留空则不注入。</p>
+  </div>
+
+  <div class="card">
+    <h2>安全设定</h2>
+    <div class="grid">
+      <label class="check"><input type="checkbox" id="ownerOnly" /> 只对主人生效</label>
+      <label class="field"><span>安全词</span><input type="text" id="pauseWord" placeholder="停" /></label>
+      <label class="field"><span>吃醋敏感度</span><input type="number" id="jealousy" min="0" max="100" /></label>
+      <label class="field"><span>被拒惩罚</span><input type="number" id="rejectionPenalty" min="0" max="50" /></label>
+    </div>
+    <div class="bar" style="margin-top:14px">
+      <button id="saveCfg">保存设置</button>
+      <button id="resetCfg" class="ghost">恢复默认</button>
+      <span id="msg2" class="muted"></span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const API = '/dsh-longing/api'
+const $ = (id) => document.getElementById(id)
+let TOKEN = localStorage.getItem('desireToken') || ''
+$('token').value = TOKEN
+$('saveToken').onclick = () => {
+  TOKEN = $('token').value.trim()
+  localStorage.setItem('desireToken', TOKEN)
+  boot()
+}
+function needToken(){ $('authCard').style.display = ''; $('authMsg').textContent='需要令牌才能读写'; }
+const NAMES = ['lust','lewd','possess','shame','resist','fatigue']
+let state = { lust:30, lewd:35, possess:55 }
+let cfg = {}
+
+function mode(l){ return l>=80?'发情':l>=60?'主动':l>=40?'黏人':'平静' }
+
+function clock(){
+  const d = new Date()
+  $('clockTime').textContent = d.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})
+  $('clockDate').textContent = d.toLocaleDateString('zh-CN',{month:'long',day:'numeric',weekday:'long'})
+}
+clock(); setInterval(clock, 20000)
+
+
+function renderState(){
+  for (const k of NAMES){ $(k).value = state[k] ?? 0; $('v-'+k).textContent = state[k] ?? 0 }
+  $('mode').textContent = mode(Number(state.lust)||0)
+  $('scene').value = state.scene || ''
+  const paused = Number(state.pausedUntil||0) > Date.now()
+  $('paused').style.display = paused ? 'inline-block' : 'none'
+}
+
+async function jget(p){ return (await fetch(p,{cache:'no-store',headers:{'x-desire-token':TOKEN}})).json() }
+async function jpost(p,b){ const r=await fetch(p,{method:'POST',headers:{'content-type':'application/json','x-desire-token':TOKEN},body:JSON.stringify(b||{})}); return r.ok?r.json():null }
+
+async function loadState(){ state = await jget(API+'/state'); renderState() }
+async function loadCfg(){ cfg = await jget(API+'/config'); fillCfg() }
+
+async function loadMeta(){
+  try {
+    const m = await jget(API+'/config/meta')
+    for (const el of document.querySelectorAll('input,textarea')) { el.classList.remove('ovr'); el.removeAttribute('title') }
+    for (const k of (m.overridden || [])) {
+      const el = $(k)
+      if (el) { el.classList.add('ovr'); el.title = '面板已覆盖此值（优先于 DSH 设置页）' }
+    }
+    $('msg2').textContent = (m.overridden || []).length ? `${m.overridden.length} 项被面板覆盖` : ''
+  } catch {}
+}
+
+$('resetCfg').onclick = async () => {
+  const r = await jpost(API+'/config/reset', { all: true })
+  if (r) { cfg = r; fillCfg(); await loadMeta(); $('msg2').textContent = '已恢复默认' }
+}
+
+function fillCfg(){
+  for (const [k,v] of Object.entries(cfg)){
+    if (k === 'channels') continue
+    const el = $(k); if (!el) continue
+    if (k === 'ownerIds') { el.value = Array.isArray(v) ? v.join(',') : (v ?? ''); continue }
+    if (el.type === 'checkbox') el.checked = !!v
+    else el.value = v
+  }
+  const ch = Array.isArray(cfg.channels) ? cfg.channels : ['qq']
+  for (const c of ['qq','bili','web']) $('ch-'+c).checked = ch.includes(c)
+  $('curveCard').style.display = cfg.curveEnabled === false ? 'none' : ''
+  for (const b of document.querySelectorAll('[data-preset]')) b.style.display = cfg.presetsEnabled === false ? 'none' : ''
+}
+
+for (const k of NAMES) $(k).addEventListener('input', ()=>{
+  state[k] = Number($(k).value)
+  $('v-'+k).textContent = state[k]   // 只更新数字，别把值写回滑块，否则拖拽会粘
+})
+
+$('save').onclick = async ()=>{ const r = await jpost(API+'/state',{lust:state.lust,lewd:state.lewd,possess:state.possess,shame:state.shame,resist:state.resist,fatigue:state.fatigue,scene:$('scene').value}); if(r){ state=r; renderState(); note('已保存 '+new Date().toLocaleTimeString(),'ok') } }
+for (const b of document.querySelectorAll('[data-preset]')) b.onclick = async ()=>{ const r = await jpost(API+'/preset',{name:b.dataset.preset}); if(r){ state=r; renderState(); note('预设：'+b.textContent,'ok') } }
+$('pause').onclick = async ()=>{ const r = await jpost(API+'/pause',{minutes:120}); if(r){ state=r; renderState(); note('已暂停 2 小时','warn') } }
+
+$('saveCfg').onclick = async ()=>{
+  const patch = {}
+  for (const k of Object.keys(cfg)){
+    if (k === 'channels' || k === 'pausedUntil') continue
+    const el = $(k); if (!el) continue
+    patch[k] = el.type === 'checkbox' ? el.checked : (el.type === 'number' ? Number(el.value) : el.value)
+  }
+  patch.channels = ['qq','bili','web'].filter(c=>$('ch-'+c).checked)
+  patch.ownerIds = String($('ownerIds').value || '').split(',').map(s=>s.trim()).filter(Boolean)
+  const r = await jpost(API+'/config', patch)
+  if (r){ cfg=r; fillCfg(); $('msg2').textContent='设置已保存 '+new Date().toLocaleTimeString(); $('msg2').className='muted ok'; loadMeta() }
+  else { $('msg2').textContent='保存失败'; $('msg2').className='muted warn' }
+}
+
+function note(t,cls=''){ const m=$('msg'); m.textContent=t; m.className='muted '+cls }
+
+async function drawCurve(){
+  if (cfg.curveEnabled === false) return
+  const hist = await jget(API+'/history')
+  const c = $('curve'), ctx2 = c.getContext('2d')
+  const W = c.width, H = c.height
+  ctx2.clearRect(0,0,W,H)
+  if (!hist.length) return
+  const t1 = Date.now(), t0 = t1 - 24*3600*1000
+  const pts = hist.filter(p=>p.t>=t0)
+  const X = (t)=> ((t-t0)/(t1-t0))*(W-20)+10
+  const Y = (v)=> H-12-(v/100)*(H-24)
+  const draw = (key,color)=>{
+    ctx2.beginPath(); ctx2.strokeStyle=color; ctx2.lineWidth=2; ctx2.lineJoin='round'
+    let prev=null
+    pts.forEach((p)=>{
+      const x=X(p.t), y=Y(p[key])
+      if(prev){
+        const mx=(prev.x+x)/2, my=(prev.y+y)/2
+        ctx2.quadraticCurveTo(prev.x,prev.y,mx,my)
+      } else ctx2.moveTo(x,y)
+      prev={x,y}
+    })
+    if(prev) ctx2.lineTo(prev.x,prev.y)
+    ctx2.stroke()
+  }
+  draw('l','#5aa2ff'); draw('d','#ff7bb0'); draw('p','#ffd166')
+}
+
+async function loadComfy(){
+  try {
+    const c = await jget(API+'/comfy')
+    const el = $('comfyState')
+    el.textContent = c.up ? '在线' : '离线'
+    el.style.color = c.up ? '#7ee2a8' : '#ffb3b3'
+    $('comfyMsg').textContent = c.up ? '' : (c.error || '')
+  } catch {}
+}
+
+$('launchComfy').onclick = async () => {
+  $('comfyMsg').textContent = '正在拉起…'
+  const r = await jpost(API+'/comfy/launch', {})
+  $('comfyMsg').textContent = r?.launched ? '已发出启动命令，稍等再看状态' : '没有可用的启动脚本（先在下面填路径并保存）'
+  setTimeout(loadComfy, 4000)
+}
+
+async function boot(){
+  try {
+    await loadState()
+    await loadCfg()
+    $('authCard').style.display = 'none'
+    drawCurve()
+    loadMeta()
+    loadComfy()
+    setInterval(loadComfy, 30000)
+  } catch {
+    needToken()
+  }
+}
+boot()
+setInterval(()=>{ if(TOKEN) loadState().catch(()=>{}) }, 8000)
+</script>
+</body>
+</html>
