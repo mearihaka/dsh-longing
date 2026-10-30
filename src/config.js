@@ -31,15 +31,35 @@ export const ConfigSchema = Schema.object({
   activeHours: Schema.string().default('08:00-02:00').description('只在此时段内注入（白天不打扰）'),
 
   // ── 主动行为 ──
-  autoInitiate: Schema.boolean().default(false).description('允许她主动发第一条（默认关）'),
-  proactiveMode: Schema.string().default('off').description('主动开口通道：off / file / http'),
-  quietHours: Schema.string().default('02:00-08:00').description('安静时段（不主动）'),
-  onebotHttpBase: Schema.string().default('').description('OneBot HTTP 地址（如 http://127.0.0.1:3000）'),
-  onebotToken: Schema.string().default('').description('OneBot access token（可空）'),
-  ownerIds: Schema.array(Schema.string()).default([]).description('主人的账号 ID 列表'),
-  idleTriggerMin: Schema.number().min(1).max(240).default(20).description('多久没说话才主动'),
-  proactiveCooldownMin: Schema.number().min(5).max(720).default(120).description('两次主动间隔'),
-  proactivePerHour: Schema.number().min(0).max(10).default(1).description('每小时主动上限'),
+
+  // ── 主动开口（由通道插件执行，这里只给参数）──
+  autoInitiate: Schema.boolean().default(false).description('允许她主动开口（冷场时自己发消息）'),
+  idleTriggerMin: Schema.number().min(1).max(240).default(15).description('冷场多少分钟后可以考虑开口'),
+  proactiveMaxPerDay: Schema.number().min(0).max(720).default(8).description('每天最多主动几次'),
+  quietHours: Schema.string().default('23:30-08:00').description('安静时段（不主动）'),
+  urgeThink: Schema.number().min(0).max(100).default(40).description('到多少：开始在心里想'),
+  urgeHint: Schema.number().min(0).max(100).default(55).description('到多少：开始暗示'),
+  urgeSpeak: Schema.number().min(0).max(100).default(70).description('到多少：开口说'),
+  urgeAct: Schema.number().min(0).max(100).default(85).description('到多少：直接上手'),
+  urgeRepeatMin: Schema.number().min(1).max(240).default(30).description('在发情档位时，多久可以再主动一次'),
+  lewdDirect: Schema.number().min(0).max(100).default(55).description('色情值到多少开始说直白的话'),
+  possessJealous: Schema.number().min(0).max(100).default(60).description('占有值到多少开始吃醋'),
+  fatigueTired: Schema.number().min(0).max(100).default(60).description('疲劳到多少开始撑不住'),
+  shameHiding: Schema.number().min(0).max(100).default(60).description('羞耻到多少开始口是心非'),
+  resistHolding: Schema.number().min(0).max(100).default(60).description('理智到多少开始半推半就'),
+  // ── 好感度 ──
+  interactionLust: Schema.number().min(0).max(20).default(2).description('主人每说一句涨多少性欲'),
+  affectionGain: Schema.number().min(0).max(10).default(1).description('每次主人聊天加多少好感'),
+  affectionDecay: Schema.number().min(0).max(5).default(0.3).description('每小时自然回落多少好感'),
+  affectionClose: Schema.number().min(0).max(100).default(60).description('好感到多少开始黏人'),
+  affectionDevoted: Schema.number().min(0).max(100).default(80).description('好感到多少离不开'),
+  cooldownMin: Schema.number().min(1).max(240).default(30).description('两次主动之间至少隔多少分钟'),
+  resistWeight: Schema.number().min(0).max(1).default(0.5).description('理智对欲望的抵消权重（有效欲望 = 性欲 − 理智×权重）'),
+  coldLust: Schema.number().min(0).max(100).default(25).description('性欲低于多少会变得冷淡'),
+  shyLewd: Schema.number().min(0).max(100).default(30).description('色情低于多少会放不开'),
+  distantPossess: Schema.number().min(0).max(100).default(30).description('占有低于多少会变得疏离'),
+  numbAffection: Schema.number().min(0).max(100).default(30).description('好感低于多少会有距离感'),
+  initiateThreshold: Schema.number().min(0).max(100).default(60).description('低于该性欲值时她不会主动开口'),
 
   // ── 强度门槛 ──
   explicitThreshold: Schema.number().min(0).max(100).default(55).description('露骨门槛'),
@@ -78,7 +98,8 @@ export const ConfigSchema = Schema.object({
   comfyProbeSec: Schema.number().min(15).max(600).default(60).description('探测间隔（秒）'),
 
   // ── 存储 ──
+  migrateFrom: Schema.string().default('').description('可选：旧版状态目录（首次启动时把 欲望状态.json 等搬过来，只搬一次）'),
   statePath: Schema.string()
-    .default('<path>/dsh-qq/workspace/欲望状态.json')
-    .description('状态文件路径（历史与面板配置放在同目录）'),
+    .default('')
+    .description('状态文件路径；留空 = 进程工作目录下的 workspace/（建议显式配一个）'),
 })

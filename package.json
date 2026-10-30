@@ -1,7 +1,7 @@
 {
   "name": "dsh-longing",
-  "version": "0.1.0",
-  "description": "Longing: a slowly drifting desire state (lust / lewd / possessive / shame / resist / fatigue) with a built-in panel and prompt block for DeepSeek Harness.",
+  "version": "1.0.0",
+  "description": "Longing (暗涌): a drifting desire state (lust/lewd/possess/shame/resist/fatigue/affection) with a local panel and a first-person prompt block for DeepSeek Harness.",
   "type": "module",
   "main": "./src/index.js",
   "exports": {
@@ -14,7 +14,9 @@
     "deepseek-harness",
     "dsh",
     "dsh-plugin",
-    "cordis"
+    "cordis",
+    "persona",
+    "desire"
   ],
   "license": "MIT",
   "engines": {
@@ -35,6 +37,8 @@
   },
   "files": [
     "src",
+    "panel",
+    "docs",
     "assets",
     "cordis.patch.yml",
     "README.md",

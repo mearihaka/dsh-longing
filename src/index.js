@@ -1,15 +1,39 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ConfigSchema } from './config.js'
 import { buildBlock } from './prompt.js'
-import { startProactive } from './proactive.js'
 
 export const name = 'dsh-longing'
 export const inject = []
 export const Config = ConfigSchema
+
+const NUM_KEYS = new Set([
+  'lust','lewd','possess','shame','resist','fatigue','scene','peakBonus','decayPerHour','nightDecayPerHour',
+  'idleTriggerMin','proactiveMaxPerDay','initiateThreshold','urgeThink','urgeHint','urgeSpeak','urgeAct','urgeRepeatMin',
+  'lewdDirect','possessJealous','fatigueTired','shameHiding','resistHolding','affection','affectionGain','affectionDecay',
+  'affectionClose','affectionDevoted','cooldownMin','resistWeight','coldLust','shyLewd','distantPossess','numbAffection',
+  'explicitThreshold','imageThreshold','imagesPerDay','jealousy','rejectionPenalty','pausedUntil','comfyProbeSec','interactionLust',
+])
+const BOOL_KEYS = new Set([
+  'enabled','stealthInjection','autoInitiate','nsfwImages','curveEnabled','presetsEnabled','voiceEnabled','memoryEnabled',
+  'scheduleEnabled','pauseEnabled','rememberAfterward','ownerOnly','comfyEnabled','comfyAutoLaunch',
+])
+// 面板能写的键：schema 字段 + channels/ownerIds。写死是为了防止任意键落盘。
+const ALLOWED_KEYS = new Set([
+  ...NUM_KEYS,
+  ...BOOL_KEYS,
+  'channels','ownerIds','scene','peakWindow','activeHours','quietHours','pauseWord','personaNote','comfyBaseUrl','comfyLaunchScript','statePath',
+])
+
+function safeEqual(a, b) {
+  const x = Buffer.from(String(a))
+  const y = Buffer.from(String(b))
+  if (x.length !== y.length) return false
+  return timingSafeEqual(x, y)
+}
 
 const DEFAULTS = { lust: 30, lewd: 35, possess: 55, shame: 45, resist: 50, fatigue: 20 }
 const TICK_MS = 60_000
@@ -93,17 +117,18 @@ export function apply(ctx, config) {
   const cfgFile = join(baseDir, '欲望面板配置.json')
   const historyFile = join(baseDir, '欲望历史.json')
 
-  // 老用户迁移：没配 statePath 时，从旧默认目录把文件搬过来（只搬一次）
-  if (!statePath) {
-    const legacyDir = '<path>/dsh-qq/workspace'
+  // 可选迁移：只有显式配了 migrateFrom 才搬，搬一次就够（不写死任何本机路径）
+  const migrateFrom = String(config?.migrateFrom ?? '').trim()
+  if (!statePath && migrateFrom) {
     for (const name of ['欲望状态.json', '欲望面板配置.json', '欲望历史.json']) {
       const dest = join(baseDir, name)
-      const src = join(legacyDir, name)
-      if (!existsSync(dest) && existsSync(src)) {
-        try {
-          mkdirSync(baseDir, { recursive: true })
-          writeFileSync(dest, readFileSync(src))
-        } catch {}
+      const src = join(migrateFrom, name)
+      if (existsSync(dest) || !existsSync(src)) continue
+      try {
+        mkdirSync(baseDir, { recursive: true })
+        writeFileSync(dest, readFileSync(src))
+      } catch (e) {
+        console.warn(`[dsh-longing] 迁移 ${name} 失败：${e?.message ?? e}`)
       }
     }
   }
@@ -135,6 +160,7 @@ export function apply(ctx, config) {
     shame: clamp(panelCfg.shame ?? config?.shame ?? DEFAULTS.shame),
     resist: clamp(panelCfg.resist ?? config?.resist ?? DEFAULTS.resist),
     fatigue: clamp(panelCfg.fatigue ?? config?.fatigue ?? DEFAULTS.fatigue),
+    affection: clamp(panelCfg.affection ?? config?.affection ?? DEFAULTS.affection),
     scene: String(panelCfg.scene ?? config?.scene ?? ''),
   }
 
@@ -203,6 +229,17 @@ export function apply(ctx, config) {
   }
   refreshBlock()
 
+  // 通道插件收到主人消息时调一下：涨性欲、涨好感（热重载不重复注册）
+  globalThis.__dshLongingNote = (kind) => {
+    if (kind !== 'owner') return
+    const eff = settings()
+    state.lust = clamp(Number(state.lust) + Number(eff?.interactionLust ?? 2))
+    state.affection = clamp(Number(state.affection ?? DEFAULTS.affection) + Number(eff?.affectionGain ?? 1))
+    state.updatedAt = Date.now()
+    writeJson(stateFile, state, logger)
+    refreshBlock()
+  }
+
   probeComfy().catch(() => {})
   const comfyTimer = setInterval(() => probeComfy().catch(() => {}), Math.max(15, Number(settings()?.comfyProbeSec ?? 60)) * 1000)
   comfyTimer?.unref?.()
@@ -222,6 +259,13 @@ export function apply(ctx, config) {
       const nowTs = Date.now()
       for (const [sid, expire] of owners) if (Number(expire) < nowTs) owners.delete(sid)
     }
+    // 暂停：冻结数值，只刷新注入（避免恢复后一次性补偿衰减）
+    if (Number(state.pausedUntil ?? 0) > Date.now()) {
+      state.updatedAt = Date.now()
+      writeJson(stateFile, state)
+      refreshBlock()
+      return
+    }
     const disk = readJson(stateFile, null)
     if (disk && Number(disk.updatedAt ?? 0) > Number(state.updatedAt ?? 0)) state = { ...state, ...disk }
     const now = Date.now()
@@ -229,6 +273,7 @@ export function apply(ctx, config) {
     const peak = inWindow(parseWindow(eff?.peakWindow))
     const decay = peak ? Number(eff?.nightDecayPerHour ?? 6) * 0.25 : Number(eff?.decayPerHour ?? 3)
     state.lust = clamp(state.lust - decay * dtHours)
+    state.affection = clamp(Number(state.affection ?? DEFAULTS.affection) - Number(eff?.affectionDecay ?? 0.3) * dtHours)
     if (peak && state.lastPeak !== todayKey()) {
       state.lust = clamp(state.lust + Number(eff?.peakBonus ?? 25))
       state.lastPeak = todayKey()
@@ -256,7 +301,10 @@ export function apply(ctx, config) {
     const body = (req) =>
       new Promise((resolve) => {
         let raw = ''
-        req.on('data', (c) => (raw += c))
+        req.on('data', (c) => {
+          raw += c
+          if (raw.length > 262144) req.destroy() // 256KB 上限，挡误发的巨型 payload
+        })
         req.on('end', () => {
           try {
             resolve(JSON.parse(raw || '{}'))
@@ -286,12 +334,12 @@ export function apply(ctx, config) {
         }
         if (url.startsWith('/dsh-longing/api/')) {
           const tok = String(req.headers['x-desire-token'] ?? '')
-          if (!panelToken || tok !== panelToken) return send(res, 401, 'unauthorized')
+          if (!panelToken || !safeEqual(tok, panelToken)) return send(res, 401, 'unauthorized')
         }
         if (url.startsWith('/dsh-longing/api/state')) {
           if (req.method === 'POST') {
             const p = await body(req)
-            for (const k of ['lust', 'lewd', 'possess', 'shame', 'resist', 'fatigue']) {
+            for (const k of ['lust', 'lewd', 'possess', 'shame', 'resist', 'fatigue', 'affection']) {
               if (p[k] === undefined) continue
               state[k] = clamp(p[k]) // 面板由用户直接控制，不限幅
             }
@@ -323,7 +371,16 @@ export function apply(ctx, config) {
           if (req.method === 'POST') {
             const p = await body(req)
             const cur = readJson(cfgFile, {})
-            writeJson(cfgFile, { ...cur, ...p })
+            const patch = {}
+            for (const [k, v] of Object.entries(p ?? {})) {
+              if (!ALLOWED_KEYS.has(k)) continue // 只收 schema 里真有的键
+              if (k === 'channels') patch.channels = (Array.isArray(v) ? v : []).map(String).filter(Boolean).slice(0, 8)
+              else if (k === 'ownerIds') patch.ownerIds = (Array.isArray(v) ? v : String(v ?? '').split(',')).map((x) => String(x).trim()).filter(Boolean).slice(0, 20)
+              else if (NUM_KEYS.has(k)) { const n = Number(v); if (Number.isFinite(n)) patch[k] = n }
+              else if (BOOL_KEYS.has(k)) patch[k] = Boolean(v)
+              else patch[k] = String(v ?? '').slice(0, 400)
+            }
+            writeJson(cfgFile, { ...cur, ...patch })
           }
           return json(res, settings())
         }
@@ -340,7 +397,7 @@ export function apply(ctx, config) {
         }
         if (url.startsWith('/dsh-longing/api/pause')) {
           const p = await body(req)
-          state.pausedUntil = Date.now() + Math.max(0, Number(p?.minutes ?? 120)) * 60_000
+          state.pausedUntil = Date.now() + Math.min(1440, Math.max(0, Number(p?.minutes ?? 120))) * 60_000
           writeJson(stateFile, state)
           return json(res, state)
         }
@@ -391,27 +448,10 @@ export function apply(ctx, config) {
   tryRegisterWeb()
 
   function modeOf(s) {
-    const l = Number(s?.lust ?? 0)
-    return l >= 80 ? '发情' : l >= 60 ? '主动' : l >= 40 ? '黏人' : '平静'
+    // 跟注入层保持一致：看「有效欲望 = 性欲 − 理智×权重」
+    const eff = Math.max(0, Math.min(100, Number(s?.lust ?? 0) - Number(s?.resist ?? 0) * Number(settings()?.resistWeight ?? 0.5)))
+    return eff >= 80 ? '发情' : eff >= 60 ? '主动' : eff >= 40 ? '黏人' : '平静'
   }
-
-  // 主动开口（自带通道，不依赖 dsh-qq）
-  const stopProactive = startProactive({
-    baseDir,
-    getCfg: () => settings(),
-    logger,
-  })
-  ctx?.on?.('dispose', () => stopProactive?.())
-
-  // 对外服务：ctx.get('desire').block() / .state()
-  try {
-    ctx?.provide?.('desire')
-    ctx.desire = {
-      block: () => globalThis.__dshDesireBlock ?? refreshBlock(),
-      state: () => ({ ...state }),
-      mode: () => modeOf(state),
-    }
-  } catch {}
 
   const tools = ctx?.get?.('tools')
   if (!tools?.register) return
@@ -442,6 +482,7 @@ export function apply(ctx, config) {
         shame: { type: 'number' },
         resist: { type: 'number' },
         fatigue: { type: 'number' },
+        affection: { type: 'number' },
         scene: { type: 'string' },
         name: { type: 'string' },
         minutes: { type: 'number' },
@@ -461,9 +502,9 @@ export function apply(ctx, config) {
         }
       }
       if (action === 'preset' && PRESETS[String(args?.name)]) Object.assign(state, PRESETS[String(args.name)])
-      if (action === 'pause') state.pausedUntil = Date.now() + Math.max(0, Number(args?.minutes ?? 120)) * 60_000
+      if (action === 'pause') state.pausedUntil = Date.now() + Math.min(1440, Math.max(0, Number(args?.minutes ?? 120))) * 60_000
       if (action === 'set' || action === 'bump') {
-        for (const k of ['lust', 'lewd', 'possess', 'shame', 'resist', 'fatigue']) {
+        for (const k of ['lust', 'lewd', 'possess', 'shame', 'resist', 'fatigue', 'affection']) {
           if (args?.[k] === undefined) continue
           const delta = action === 'bump' ? Number(args[k]) : Number(args[k]) - Number(state[k] ?? 0)
           const capped = Math.max(-STEP_LIMIT, Math.min(STEP_LIMIT, delta))
@@ -472,8 +513,13 @@ export function apply(ctx, config) {
       }
       if (args?.scene !== undefined) state.scene = String(args.scene).slice(0, 40)
       state.updatedAt = Date.now()
-      writeJson(stateFile, state)
-      return { ok: true, text: `性欲 ${state.lust} / 色情 ${state.lewd} / 占有 ${state.possess}｜${modeOf(state)}` }
+      if (!writeJson(stateFile, state, logger)) return { ok: false, text: '写状态文件失败（可能被占用）' }
+      return {
+        ok: true,
+        text:
+          `性欲 ${state.lust} / 色情 ${state.lewd} / 占有 ${state.possess} / 羞耻 ${state.shame}` +
+          ` / 理智 ${state.resist} / 疲劳 ${state.fatigue} / 好感 ${state.affection ?? 50}｜${modeOf(state)}`,
+      }
     },
   })
 }
