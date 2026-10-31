@@ -42,6 +42,8 @@
   .pill { display:inline-block; padding:3px 10px; border-radius:999px; background:rgba(90,150,255,.18); border:1px solid rgba(120,170,255,.35); font-size:12px; }
   .ok { color:#7ee2a8; } .warn { color:#ffb3b3; }
   canvas { width:100%; height:160px; display:block; border-radius:12px; background:rgba(5,10,22,.55); }
+  .caphint { font-size:11px; line-height:1.5; color:#ffb3b3; margin:-2px 0 10px; min-height:16px; }
+  .caphint .over { color:#ff7b7b; font-weight:600; }
 </style>
 </head>
 <body>
@@ -51,7 +53,7 @@
     <div class="date" id="clockDate"></div>
   </div>
   <h1>角色 · 欲望面板</h1>
-  <div class="sub">由插件自带，改完立即生效。 <span id="mode" class="pill">加载中…</span> <span id="paused" class="pill" style="display:none">已暂停</span></div>
+  <div class="sub">由插件自带，改完立即生效。 <span id="mode" class="pill">加载中…</span> <span id="paused" class="pill" style="display:none">已暂停</span> <span id="aftercare" class="pill" style="display:none;background:rgba(255,140,180,.2);border-color:rgba(255,140,180,.45)">余韵中</span> <button id="debugToggle" class="ghost" style="margin-left:14px;padding:3px 12px;font-size:12px">调试模式：关</button> <span id="debugHint" class="muted"></span></div>
 
   <div class="content">
   <div class="card" id="authCard">
@@ -61,25 +63,33 @@
       <button id="saveToken">解锁面板</button>
       <span id="authMsg" class="muted"></span>
     </div>
-    <p class="muted">令牌在本机 <code>欲望状态.json</code> 同目录的 <code>面板令牌.txt</code>，只存在本地。</p>
+    <p class="muted">令牌文件：<code id="tokenPath">__TOKEN_FILE__</code> <button id="copyPath" class="ghost" style="padding:1px 8px;font-size:12px">复制路径</button> <span id="copyMsg" class="muted"></span></p>
+    <p class="muted">令牌只存在本机。这一版起改成「只记住到关掉标签页」——同一个标签页里刷新不用重贴，关掉浏览器才需要。</p>
   </div>
 
   <div class="card">
     <h2>当前状态</h2>
-    <div class="row"><div class="label">性欲 lust</div><div class="val" id="v-lust">–</div></div>
+    <div class="row"><div class="label">性欲 lust <span class="muted">想要</span></div><div class="val" id="v-lust">–</div></div>
     <input type="range" id="lust" min="0" max="100" step="1" />
-    <div class="row"><div class="label">色情值 lewd</div><div class="val" id="v-lewd">–</div></div>
+    <div class="caphint" id="cap-lust"></div>
+    <div class="row"><div class="label">色情值 lewd <span class="muted">敢说/敢做</span></div><div class="val" id="v-lewd">–</div></div>
     <input type="range" id="lewd" min="0" max="100" step="1" />
+    <div class="caphint" id="cap-lewd"></div>
     <div class="row"><div class="label">占有值 possess</div><div class="val" id="v-possess">–</div></div>
     <input type="range" id="possess" min="0" max="100" step="1" />
+    <div class="caphint" id="cap-possess"></div>
     <div class="row"><div class="label">羞耻度 shame</div><div class="val" id="v-shame">–</div></div>
     <input type="range" id="shame" min="0" max="100" step="1" />
+    <div class="caphint" id="cap-shame"></div>
     <div class="row"><div class="label">理智 resist</div><div class="val" id="v-resist">–</div></div>
     <input type="range" id="resist" min="0" max="100" step="1" />
+    <div class="caphint" id="cap-resist"></div>
     <div class="row"><div class="label">疲劳 fatigue</div><div class="val" id="v-fatigue">–</div></div>
     <input type="range" id="fatigue" min="0" max="100" step="1" />
+    <div class="caphint" id="cap-fatigue"></div>
     <div class="row"><div class="label">好感度 affection</div><div class="val" id="v-affection">–</div></div>
     <input type="range" id="affection" min="0" max="100" step="1" />
+    <div class="caphint" id="cap-affection"></div>
     <div class="row"><div class="label">当前场景</div><input type="text" id="scene" placeholder="卧室 / 办公室 / 被窝" style="max-width:220px" /></div>
     <div class="bar" style="margin-top:14px">
       <button id="save">保存状态</button>
@@ -88,8 +98,47 @@
       <button class="ghost" data-preset="heat">发情</button>
       <button class="ghost" data-preset="yandere">病娇狂暴</button>
       <button class="danger" id="pause">暂停 2 小时</button>
+      <button class="ghost" id="resume" style="display:none">恢复运行</button>
       <span id="msg" class="muted"></span>
     </div>
+  </div>
+
+  <div class="card" id="gateCard">
+    <h2>她能到哪一步</h2>
+    <div id="gateBody" class="muted" style="line-height:2"></div>
+    <p class="muted">没到门槛时她不会照做：差一点会半推半就，差得多会真的拦住。门槛全挂在好感上。</p>
+  </div>
+
+  <div class="card" id="diaryCard">
+    <h2>心情日记（她不会主动说出来）</h2>
+    <div id="diaryBody" class="muted" style="white-space:pre-wrap;line-height:1.95"></div>
+    <div class="bar" style="margin-top:14px">
+      <input type="text" id="diaryInput" placeholder="帮她记一句心里话…" style="flex:1" />
+      <button id="diarySave" class="ghost">记下</button>
+      <span id="diaryMsg" class="muted"></span>
+    </div>
+    <p class="muted">事件会自动归到「高兴 / 难受」，内心想法由她自己写（聊天里让她写，或在这里补）。只写不推，想看才看。</p>
+  </div>
+
+  <div class="card" id="eventCard">
+    <h2>刚刚发生了什么（点一下记一次）</h2>
+    <div class="grid">
+      <div>
+        <div class="muted" style="margin-bottom:8px">好的</div>
+        <div class="bar" id="evGood"></div>
+      </div>
+      <div>
+        <div class="muted" style="margin-bottom:8px">不好的</div>
+        <div class="bar" id="evBad"></div>
+      </div>
+    </div>
+    <div class="bar" style="margin-top:12px">
+      <button class="danger" id="evStop">她说停</button>
+      <button id="evClimax" class="ghost" style="background:linear-gradient(180deg,#b0578a,#7d3a60)">事后</button>
+      <span id="evMsg" class="muted"></span>
+    </div>
+    <p class="muted" id="evRecent" style="margin-top:10px"></p>
+    <p class="muted">通道插件（如 dsh-qq）在主人私聊里会自动登记；这里手动点用于补记和测试。同一件事一小时内重复会递减（第二句只有一半效果），单次最多改 10 点。</p>
   </div>
 
   <div class="card" id="curveCard">
@@ -106,6 +155,20 @@
       <label class="field"><span>每小时衰减</span><input type="number" id="decayPerHour" min="0" max="30" /></label>
       <label class="field"><span>睡眠时段衰减</span><input type="number" id="nightDecayPerHour" min="0" max="30" /></label>
       <label class="field"><span>生效时段</span><input type="text" id="activeHours" placeholder="08:00-02:00" /></label>
+      <label class="field"><span>负面断点（六个降序，逗号分隔）</span><input type="text" id="negBreakpoints" placeholder="45,40,35,25,10,5" /></label>
+      <label class="check"><input type="checkbox" id="couplingEnabled" /> 数值互相牵制（占有压理智、色情压羞耻、疲劳压性欲、好感养占有）</label>
+      <label class="field"><span>耦合与自然演化倍率（0 = 只保留时间衰减）</span><input type="number" id="couplingRate" min="0" max="3" step="0.1" /></label>
+      <label class="field"><span>多久没消息算「被晾着」（小时，只算清醒时段）</span><input type="number" id="lonelyHours" min="1" max="72" /></label>
+      <label class="field"><span>睡眠时段（这段时间不算冷落，也不扣好感）</span><input type="text" id="sleepWindow" placeholder="23:30-08:00" /></label>
+      <label class="field"><span>一句话/一件事的冲击倍率（0 = 只记录不改值）</span><input type="number" id="eventGain" min="0" max="3" step="0.1" /></label>
+      <label class="field"><span>日记默认显示几天</span><input type="number" id="diaryDays" min="1" max="30" /></label>
+    </div>
+    <p class="muted">每一档正反馈都能单独关：关掉高档会退回下一档的表现，不会突然沉默。</p>
+    <div class="grid">
+      <label class="check"><input type="checkbox" id="feedbackThink" /> 允许「在心里想」</label>
+      <label class="check"><input type="checkbox" id="feedbackHint" /> 允许「暗示」</label>
+      <label class="check"><input type="checkbox" id="feedbackSpeak" /> 允许「开口要」</label>
+      <label class="check"><input type="checkbox" id="feedbackAct" /> 允许「直接上手」</label>
     </div>
   </div>
 
@@ -208,12 +271,34 @@
 <script>
 const API = '/dsh-longing/api'
 const $ = (id) => document.getElementById(id)
-let TOKEN = localStorage.getItem('desireToken') || ''
+let TOKEN = sessionStorage.getItem('desireToken') || ''
 $('token').value = TOKEN
 $('saveToken').onclick = () => {
   TOKEN = $('token').value.trim()
-  localStorage.setItem('desireToken', TOKEN)
+  sessionStorage.setItem('desireToken', TOKEN)
   boot()
+}
+// 令牌要每次重贴，就别让人再去找路径：复制按钮直接给绝对路径，粘到资源管理器地址栏就能打开
+if (($('tokenPath').textContent || '').includes('__TOKEN_FILE__')) {
+  $('tokenPath').textContent = '（重启 dsh 后这里会显示绝对路径）'
+}
+$('copyPath').onclick = async () => {
+  const path = $('tokenPath').textContent || ''
+  const msg = $('copyMsg')
+  try {
+    await navigator.clipboard.writeText(path)
+    msg.textContent = '路径已复制'
+    msg.className = 'muted ok'
+  } catch {
+    // 剪贴板要 https 或 localhost；取不到就选中让人手动复制
+    const r = document.createRange()
+    r.selectNodeContents($('tokenPath'))
+    const sel = window.getSelection()
+    sel.removeAllRanges()
+    sel.addRange(r)
+    msg.textContent = '已选中，Ctrl+C'
+    msg.className = 'muted warn'
+  }
 }
 function needToken(){ $('authCard').style.display = ''; $('authMsg').textContent='需要令牌才能读写'; }
 const NAMES = ['lust','lewd','possess','shame','resist','fatigue','affection']
@@ -222,6 +307,9 @@ let dirty = false // 动过滑块还没保存：别让轮询把值刷回去
 let cfg = {}
 
 function mode(l){ return l>=80?'发情':l>=60?'主动':l>=40?'黏人':'平静' }
+// 显示用的模式以后端为准：后端算的是「有效欲望 = 性欲 − 理智×0.5」，
+// 前端只看原始 lust 会在理智高的时候报错档位。
+function shownMode(){ return state.mode || mode(Number(state.lust)||0) }
 
 function clock(){
   const d = new Date()
@@ -231,15 +319,150 @@ function clock(){
 clock(); setInterval(clock, 20000)
 
 
-function renderState(){
-  // dirty 时不动滑块：否则 8 秒一次的轮询会把没保存的拖动结果冲掉
-  if (!dirty) {
-    for (const k of NAMES){ $(k).value = state[k] ?? 0; $('v-'+k).textContent = state[k] ?? 0 }
+const CAP_BY = { resist:'占有', shame:'色情', lust:'疲劳', possess:'好感' }
+const EV_LABEL = {
+  praise:'夸奖', comfort:'哄她', intimate:'亲密', desire:'直白要', protect:'护着', apologize:'道歉',
+  promise:'承诺', tease:'撩一下', gift:'送东西', coax:'哄软',
+  cold:'冷淡', reject:'拒绝', ignore:'无视', mentionOther:'提别人', compare:'和别人比', blame:'凶她',
+  lie:'撒谎', leave:'说要走', force:'硬来', bodyShame:'嫌身材', neglect:'晾着', stop:'她说停',
+}
+const EV_GOOD = ['praise','comfort','intimate','desire','protect','apologize','promise','tease','gift','coax']
+const EV_BAD = ['cold','reject','ignore','mentionOther','compare','blame','lie','leave','force','bodyShame','neglect']
+
+async function fireEvent(name){
+  const r = await jpost(API+'/event', { name })
+  const el = $('evMsg')
+  if (r && r.ok) {
+    el.textContent = r.text
+    el.className = 'muted ok'
+    await loadState()
+  } else {
+    el.textContent = r?.text || '没生效'
+    el.className = 'muted warn'
   }
-  $('mode').textContent = mode(Number(state.lust)||0)
-  $('scene').value = state.scene || ''
+}
+
+function buildEventButtons(){
+  const mk = (k) => {
+    const b = document.createElement('button')
+    b.className = 'ghost'
+    b.textContent = EV_LABEL[k] || k
+    b.onclick = () => fireEvent(k)
+    return b
+  }
+  $('evGood').replaceChildren(...EV_GOOD.map(mk))
+  $('evBad').replaceChildren(...EV_BAD.map(mk))
+  $('evStop').onclick = () => fireEvent('stop')
+  $('evClimax').onclick = () => fireEvent('climax')
+}
+
+function renderEvents(){
+  const recent = state.recent || []
+  $('evRecent').textContent = recent.length
+    ? '最近：' + recent.map(e => EV_LABEL[e.name] || e.name).join(' → ')
+    : ''
+}
+
+// 她能到哪一步：✓ 已解锁 / 差 N 表示还差多少
+function renderGates(){
+  const list = state.unlocked || []
+  if (!list.length) { $('gateBody').textContent = '（解锁系统关着）'; return }
+  $('gateBody').innerHTML = list.map(u => {
+    const mark = u.ok
+      ? '<span class="ok">✓</span>'
+      : `<span class="warn">差 ${u.gap}</span>`
+    return `<div>${mark}　${u.name}</div>`
+  }).join('')
+}
+
+function renderCaps(){
+  // 软上限画在滑块上：拉不过去的区间变红，下面写清是谁压着
+  const caps = state.caps || {}
+  const overBy = state.overBy || {}
+  for (const k of NAMES){
+    const el = $(k); if (!el) continue
+    const cap = Number(caps[k] ?? 100)
+    if (cap < 100) {
+      el.style.background = `linear-gradient(to right, rgba(255,255,255,.16) 0 ${cap}%, rgba(255,80,80,.38) ${cap}% 100%)`
+    } else {
+      el.style.background = ''
+    }
+    const hint = $('cap-'+k)
+    if (!hint) continue
+    if (cap < 100) {
+      // 用本地值判断，拖动过程中就能看到「超了」，不用等保存后服务端回填 overBy
+      const over = Number(state[k]) > cap
+      hint.innerHTML = `上限 ${cap}（${CAP_BY[k]||'别的值'}压着）` +
+        (over ? ' <span class="over">现在超了，正被往回拉</span>' : '')
+    } else {
+      hint.textContent = ''
+    }
+  }
+}
+
+function renderState(){
+  // dirty 时不动滑块和场景框：否则 8 秒一次的轮询会把没保存的拖动/输入冲掉
+  if (!dirty) {
+    for (const k of NAMES){ $(k).value = Math.round(Number(state[k]) || 0); $('v-'+k).textContent = Math.round(Number(state[k]) || 0) }
+    $('scene').value = state.scene || ''
+  }
+  $('mode').textContent = shownMode()
+  renderCaps()
+  renderEvents()
+  renderGates()
+  renderDebug()
   const paused = Number(state.pausedUntil||0) > Date.now()
   $('paused').style.display = paused ? 'inline-block' : 'none'
+  $('resume').style.display = paused ? '' : 'none'
+  const left = Number(state.aftercareUntil || 0) - Date.now()
+  const ac = $('aftercare')
+  if (left > 0) {
+    ac.style.display = 'inline-block'
+    ac.textContent = `余韵 ${Math.ceil(left / 60000)} 分钟`
+  } else {
+    ac.style.display = 'none'
+  }
+}
+
+// 调试关着的时候，滑块只读、预设和保存都收起来 —— 数值只能靠聊天养。
+// 用按钮而不是 checkbox：13px 的小方框既难点，又容易被 8 秒轮询把勾选刷回去。
+function renderDebug(){
+  const on = state.debug === true
+  const btn = $('debugToggle')
+  if (btn) {
+    btn.textContent = on ? '调试模式：开' : '调试模式：关'
+    btn.className = on ? '' : 'ghost'
+    btn.style.cssText = 'margin-left:14px;padding:3px 12px;font-size:12px'
+  }
+  for (const k of NAMES){ const el = $(k); if (el) el.disabled = !on }
+  $('scene').disabled = !on
+  $('save').style.display = on ? '' : 'none'
+  for (const b of document.querySelectorAll('[data-preset]')) {
+    b.style.display = on && cfg.presetsEnabled !== false ? '' : 'none'
+  }
+  $('debugHint').textContent = on ? '可以随便拖，改完记得保存' : '只读：想直接改数值先点「调试模式」'
+  $('debugHint').className = 'muted ' + (on ? 'warn' : '')
+}
+
+async function setDebug(on){
+  const r = await jpost(API+'/config', { debugMode: on })
+  if (r) { cfg = r; state.debug = r.debugMode === true; renderDebug() }
+}
+
+async function loadDiary(){
+  try {
+    const d = await jget(API + '/diary?days=' + encodeURIComponent(cfg.diaryDays || 7))
+    const days = d.days || []
+    $('diaryBody').textContent = days.length
+      ? days.map(day => {
+          const lines = [`${day.date}　心情 ${Math.round(Number(day.mood) || 50)}`]
+          if (day.up && day.up.length) lines.push('　高兴：' + day.up.map(e => e.note).join('；'))
+          if (day.down && day.down.length) lines.push('　难受：' + day.down.map(e => e.note).join('；'))
+          if (day.thoughts && day.thoughts.length) lines.push('　心里：' + day.thoughts.map(e => e.text).join('；'))
+          return lines.join('\n')
+        }).join('\n\n')
+      : '还没有记录。'
+  } catch {}
 }
 
 async function jget(p){ return (await fetch(p,{cache:'no-store',headers:{'x-desire-token':TOKEN}})).json() }
@@ -294,6 +517,17 @@ $('save').onclick = async ()=>{
 }
 for (const b of document.querySelectorAll('[data-preset]')) b.onclick = async ()=>{ const r = await jpost(API+'/preset',{name:b.dataset.preset}); if(r){ dirty=false; state=r; renderState(); note('预设：'+b.textContent,'ok') } }
 $('pause').onclick = async ()=>{ const r = await jpost(API+'/pause',{minutes:120}); if(r){ dirty=false; state=r; renderState(); note('已暂停 2 小时','warn') } }
+$('resume').onclick = async ()=>{ const r = await jpost(API+'/resume',{}); if(r){ dirty=false; state=r; renderState(); note('已恢复运行','ok') } }
+$('scene').addEventListener('input', ()=>{ dirty = true; note('场景改动还没保存') })
+$('debugToggle').onclick = () => setDebug(state.debug !== true)
+$('diarySave').onclick = async () => {
+  const t = $('diaryInput').value.trim()
+  if (!t) return
+  const r = await jpost(API+'/diary', { text: t })
+  $('diaryMsg').textContent = r && r.ok ? '记下了' : '没记上'
+  $('diaryMsg').className = 'muted ' + (r && r.ok ? 'ok' : 'warn')
+  if (r && r.ok) { $('diaryInput').value = ''; loadDiary() }
+}
 
 $('saveCfg').onclick = async ()=>{
   try {
@@ -301,6 +535,9 @@ $('saveCfg').onclick = async ()=>{
     for (const k of Object.keys(cfg)){
       if (k === 'channels' || k === 'pausedUntil') continue
       const el = $(k); if (!el) continue
+      // 空着就别写：Number('') === 0，把「每小时衰减」清空会变成 0，
+      // 整条时间曲线当场停摆，症状和 1.0.0 那个 bug 一模一样。
+      if (el.type !== 'checkbox' && String(el.value).trim() === '') continue
       patch[k] = el.type === 'checkbox' ? el.checked : (el.type === 'number' ? Number(el.value) : el.value)
     }
     const chBoxes = ['qq','bili','web'].map(c=>$('ch-'+c)).filter(Boolean)
@@ -349,9 +586,9 @@ async function loadComfy(){
   try {
     const c = await jget(API+'/comfy')
     const el = $('comfyState')
-    el.textContent = c.up ? '在线' : '离线'
-    el.style.color = c.up ? '#7ee2a8' : '#ffb3b3'
-    $('comfyMsg').textContent = c.up ? '' : (c.error || '')
+    el.textContent = c.known === false ? '未探测' : (c.up ? '在线' : '离线')
+    el.style.color = c.known === false ? '#9fb3d9' : (c.up ? '#7ee2a8' : '#ffb3b3')
+    $('comfyMsg').textContent = c.known === false ? '探测关掉了：不会自动判断后端，注入里也不提生图' : (c.up ? '' : (c.error || ''))
   } catch {}
 }
 
@@ -367,9 +604,14 @@ async function boot(){
     await loadState()
     await loadCfg()
     $('authCard').style.display = 'none'
+    buildEventButtons()
     drawCurve()
+    loadDiary()
     loadMeta()
     loadComfy()
+    // 曲线要跟着走：之前只在 boot 画一次，24 小时图上永远是打开面板那一刻的样子
+    setInterval(drawCurve, 60000)
+    setInterval(loadDiary, 60000)
     setInterval(loadComfy, 30000)
   } catch {
     needToken()

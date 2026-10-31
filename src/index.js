@@ -1,32 +1,61 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ConfigSchema } from './config.js'
-import { buildBlock } from './prompt.js'
+import { addThought, formatDay, pruneDiary, recentDiary, recordEvent } from './diary.js'
+import { EVENTS, applyEvent, recentEvents } from './events.js'
+import { buildBlock, modeOf } from './prompt.js'
+import { boundaryLine, deepestUnlocked, nextLocked, unlockedOf } from './unlock.js'
+import {
+  DIMS,
+  STATE_KEYS as CURVE_STATE_KEYS,
+  awakeHoursBetween,
+  clamp,
+  clampFloat,
+  effOf,
+  inSleepWindow,
+  nextState,
+  num,
+  pressureOf,
+  round2,
+} from './curve.js'
 
 export const name = 'dsh-longing'
 export const inject = []
 export const Config = ConfigSchema
 
+/**
+ * 状态键：只存状态文件，绝不出现在「面板配置」里。
+ * 1.0.0 把它们也当成可写配置，于是面板「保存设置」会把当时的状态快照写进
+ * 欲望面板配置.json，下次启动再反过来覆盖真实状态 —— 重启就丢进度。
+ */
+const STATE_KEYS = new Set(CURVE_STATE_KEYS)
+/** 七个可以调的数值维（scene 是字符串，单独处理）。 */
+const VALUE_KEYS = DIMS
+
+// 面板能写的「行为参数」：只有这些。状态键不在此列。
 const NUM_KEYS = new Set([
-  'lust','lewd','possess','shame','resist','fatigue','scene','peakBonus','decayPerHour','nightDecayPerHour',
-  'idleTriggerMin','proactiveMaxPerDay','initiateThreshold','urgeThink','urgeHint','urgeSpeak','urgeAct','urgeRepeatMin',
-  'lewdDirect','possessJealous','fatigueTired','shameHiding','resistHolding','affection','affectionGain','affectionDecay',
-  'affectionClose','affectionDevoted','cooldownMin','resistWeight','coldLust','shyLewd','distantPossess','numbAffection',
-  'explicitThreshold','imageThreshold','imagesPerDay','jealousy','rejectionPenalty','pausedUntil','comfyProbeSec','interactionLust',
+  'peakBonus', 'decayPerHour', 'nightDecayPerHour', 'idleTriggerMin', 'proactiveMaxPerDay',
+  'initiateThreshold', 'urgeThink', 'urgeHint', 'urgeSpeak', 'urgeAct', 'urgeRepeatMin',
+  'lewdDirect', 'possessJealous', 'fatigueTired', 'shameHiding', 'resistHolding',
+  'affectionGain', 'affectionDecay', 'affectionClose', 'affectionDevoted',
+  'cooldownMin', 'resistWeight', 'affectionWeight', 'coldLust', 'shyLewd', 'distantPossess', 'numbAffection',
+  'explicitThreshold', 'imageThreshold', 'imagesPerDay', 'jealousy', 'rejectionPenalty',
+  'comfyProbeSec', 'interactionLust', 'couplingRate', 'eventGain', 'lonelyHours', 'diaryDays',
 ])
 const BOOL_KEYS = new Set([
-  'enabled','stealthInjection','autoInitiate','nsfwImages','curveEnabled','presetsEnabled','voiceEnabled','memoryEnabled',
-  'scheduleEnabled','pauseEnabled','rememberAfterward','ownerOnly','comfyEnabled','comfyAutoLaunch',
+  'enabled', 'stealthInjection', 'autoInitiate', 'nsfwImages', 'curveEnabled', 'presetsEnabled', 'voiceEnabled',
+  'memoryEnabled', 'scheduleEnabled', 'pauseEnabled', 'rememberAfterward', 'ownerOnly', 'comfyEnabled', 'comfyAutoLaunch',
+  'couplingEnabled', 'debugMode', 'feedbackThink', 'feedbackHint', 'feedbackSpeak', 'feedbackAct', 'unlocksEnabled',
 ])
-// 面板能写的键：schema 字段 + channels/ownerIds。写死是为了防止任意键落盘。
-const ALLOWED_KEYS = new Set([
-  ...NUM_KEYS,
-  ...BOOL_KEYS,
-  'channels','ownerIds','scene','peakWindow','activeHours','quietHours','pauseWord','personaNote','comfyBaseUrl','comfyLaunchScript','statePath',
+const STR_KEYS = new Set([
+  'channels', 'ownerIds', 'peakWindow', 'activeHours', 'quietHours', 'sleepWindow', 'pauseWord', 'personaNote',
+  'comfyBaseUrl', 'comfyLaunchScript', 'comfyLaunchAllowDir', 'statePath', 'migrateFrom', 'negBreakpoints',
 ])
+// 面板能写的键：写死是为了防止任意键落盘。状态键刻意不在里面。
+const ALLOWED_KEYS = new Set([...NUM_KEYS, ...BOOL_KEYS, ...STR_KEYS])
 
 function safeEqual(a, b) {
   const x = Buffer.from(String(a))
@@ -35,38 +64,17 @@ function safeEqual(a, b) {
   return timingSafeEqual(x, y)
 }
 
-const DEFAULTS = { lust: 30, lewd: 35, possess: 55, shame: 45, resist: 50, fatigue: 20 }
+const DEFAULTS = { lust: 30, lewd: 35, possess: 55, shame: 45, resist: 50, fatigue: 20, affection: 30 }
 const TICK_MS = 60_000
 const HISTORY_MAX = 2880
-const STEP_LIMIT = 25 // 面板一次最多跳 25，避免数值跳崖导致 OOC
+const HISTORY_WRITE_MS = 5 * 60_000 // 历史全量落盘节流：内存里每分钟记，盘上五分钟一次
+const STEP_LIMIT = 25 // 面板/工具一次最多跳 25，避免数值跳崖导致 OOC
 
 const PRESETS = {
   calm: { lust: 20, lewd: 20, possess: 40, shame: 55, resist: 60, fatigue: 25 },
   clingy: { lust: 50, lewd: 40, possess: 60, shame: 45, resist: 45, fatigue: 30 },
   heat: { lust: 78, lewd: 70, possess: 80, shame: 25, resist: 30, fatigue: 20 },
   yandere: { lust: 90, lewd: 85, possess: 95, shame: 10, resist: 15, fatigue: 25 },
-}
-
-function clamp(n, lo = 0, hi = 100) {
-  const v = Number(n)
-  if (!Number.isFinite(v)) return lo
-  return Math.min(hi, Math.max(lo, Math.round(v)))
-}
-
-function parseWindow(spec) {
-  const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(String(spec ?? '').trim())
-  if (!m) return null
-  return { start: Number(m[1]) * 60 + Number(m[2]), end: Number(m[3]) * 60 + Number(m[4]) }
-}
-
-function inWindow(win, d = new Date()) {
-  if (!win) return true
-  const cur = d.getHours() * 60 + d.getMinutes()
-  return win.start <= win.end ? cur >= win.start && cur < win.end : cur >= win.start || cur < win.end
-}
-
-function todayKey(d = new Date()) {
-  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
 }
 
 function readJson(file, fallback) {
@@ -78,16 +86,25 @@ function readJson(file, fallback) {
 }
 
 function writeJson(file, data, logger) {
-  // 原子写：临时文件 + rename。Windows 上被占用会 EPERM；
-  // 用 setTimeout 异步重试，绝不在主线程自旋（否则会卡死整个进程）。
-  // 返回值只看第一次尝试：失败时面板会收到 500，用户能知道没写进去。
+  // 原子写：临时文件 + rename。Windows 上被占用会 EPERM，用 setTimeout 异步重试。
+  // 重试前先看目标文件的 mtime：如果在我们写 tmp 之后有人写过，说明对方的数据更新，
+  // 我们这份是旧快照 —— 直接放弃，别把别人的更新盖回去（那会静默丢事件增量）。
   let ok = false
   try {
     mkdirSync(dirname(file), { recursive: true })
-    const tmp = `${file}.tmp-${process.pid}-${Date.now()}`
+    const wroteAt = Date.now()
+    const tmp = `${file}.tmp-${process.pid}-${wroteAt}`
     writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8')
     const attempt = (n) => {
       try {
+        let stale = false
+        try {
+          if (statSync(file).mtimeMs > wroteAt) stale = true
+        } catch {}
+        if (stale) {
+          unlinkSync(tmp)
+          return
+        }
         renameSync(tmp, file)
         ok = true
       } catch (e) {
@@ -109,13 +126,28 @@ function writeJson(file, data, logger) {
   return ok
 }
 
+/** 文本原子写：通道插件每轮同步读这个文件，直接 writeFileSync 会读到半句。</summary> */
+function writeTextAtomic(file, text, logger) {
+  try {
+    const tmp = `${file}.tmp-${process.pid}-${Date.now()}`
+    writeFileSync(tmp, text, 'utf8')
+    renameSync(tmp, file)
+    return true
+  } catch (e) {
+    logger?.warn?.(`[dsh-longing] 注入块写入失败：${file} ${e?.message ?? e}`)
+    return false
+  }
+}
+
 export function apply(ctx, config) {
   const statePath = String(config?.statePath ?? '').trim()
   // 不写死盘符：没配就用 DSH 运行目录下的 workspace
   const baseDir = statePath ? dirname(statePath) : join(process.cwd(), 'workspace')
-  let stateFile = statePath || join(baseDir, '欲望状态.json')
+  const stateFile = statePath || join(baseDir, '欲望状态.json')
   const cfgFile = join(baseDir, '欲望面板配置.json')
   const historyFile = join(baseDir, '欲望历史.json')
+  const diaryFile = join(baseDir, '心情日记.json')
+  const logger = ctx?.logger ?? console
 
   // 可选迁移：只有显式配了 migrateFrom 才搬，搬一次就够（不写死任何本机路径）
   const migrateFrom = String(config?.migrateFrom ?? '').trim()
@@ -132,11 +164,19 @@ export function apply(ctx, config) {
       }
     }
   }
-  const logger = ctx?.logger ?? console
 
-  const panelCfg = readJson(cfgFile, {})
-  // 把「配置 + 面板」合并后写回，保证 dsh-qq 只读文件也能看到通道/开关
-  writeJson(cfgFile, { ...config, ...panelCfg })
+  // ── 面板配置：只收行为参数，历史遗留的状态键就地清掉 ──
+  const rawPanel = readJson(cfgFile, {}) ?? {}
+  const panelCfg = {}
+  for (const [k, v] of Object.entries(rawPanel)) if (!STATE_KEYS.has(k)) panelCfg[k] = v
+  const dropped = Object.keys(rawPanel).filter((k) => STATE_KEYS.has(k))
+  if (dropped.length) logger.info?.(`[dsh-longing] 面板配置里清掉状态键：${dropped.join(',')}`)
+
+  // 把「配置 + 面板」合并后写回，保证 dsh-qq 只读文件也能看到通道/开关。
+  // 但绝不再写状态键 —— 那是 1.0.0 重启丢进度的根因。
+  const cfgSnapshot = {}
+  for (const [k, v] of Object.entries(config ?? {})) if (!STATE_KEYS.has(k)) cfgSnapshot[k] = v
+  writeJson(cfgFile, { ...cfgSnapshot, ...panelCfg }, logger)
 
   // 面板令牌：首次生成后落盘，面板首屏输入一次即可。
   const tokenFile = join(baseDir, '面板令牌.txt')
@@ -153,35 +193,111 @@ export function apply(ctx, config) {
   }
   logger.info?.(`[dsh-longing] 面板令牌文件：${tokenFile}`)
 
+  // 热重载时要能真正停下来：旧闭包继续跑会重复注册路由和工具、用过期 state 覆盖注入文件
+  let disposed = false
+
+  // 初始值只认插件配置（面板配置里的状态键已经被清掉了），状态文件才是真相。
   const base = {
-    lust: clamp(panelCfg.lust ?? config?.lust ?? DEFAULTS.lust),
-    lewd: clamp(panelCfg.lewd ?? config?.lewd ?? DEFAULTS.lewd),
-    possess: clamp(panelCfg.possess ?? config?.possess ?? DEFAULTS.possess),
-    shame: clamp(panelCfg.shame ?? config?.shame ?? DEFAULTS.shame),
-    resist: clamp(panelCfg.resist ?? config?.resist ?? DEFAULTS.resist),
-    fatigue: clamp(panelCfg.fatigue ?? config?.fatigue ?? DEFAULTS.fatigue),
-    affection: clamp(panelCfg.affection ?? config?.affection ?? DEFAULTS.affection),
-    scene: String(panelCfg.scene ?? config?.scene ?? ''),
+    lust: clamp(num(config?.lust, DEFAULTS.lust)),
+    lewd: clamp(num(config?.lewd, DEFAULTS.lewd)),
+    possess: clamp(num(config?.possess, DEFAULTS.possess)),
+    shame: clamp(num(config?.shame, DEFAULTS.shame)),
+    resist: clamp(num(config?.resist, DEFAULTS.resist)),
+    fatigue: clamp(num(config?.fatigue, DEFAULTS.fatigue)),
+    affection: clamp(num(config?.affection, DEFAULTS.affection)),
+    scene: String(config?.scene ?? '').slice(0, 40),
   }
 
-  let state = readJson(stateFile, null) ?? { ...base, updatedAt: Date.now(), lastPeak: '', pausedUntil: 0 }
-  state = { ...state, ...base, updatedAt: Date.now() }
-  writeJson(stateFile, state)
+  function settings() {
+    return { ...config, ...readJson(cfgFile, {}) }
+  }
+
+  /** 给面板看的设置：剔除状态键，免得上一次配置里的初始值把滑块盖掉。 */
+  function publicSettings() {
+    const s = settings()
+    const out = {}
+    for (const [k, v] of Object.entries(s)) if (!STATE_KEYS.has(k)) out[k] = v
+    return out
+  }
+
+  function normalizeState(s) {
+    const out = { ...s }
+    for (const k of VALUE_KEYS) out[k] = clampFloat(num(out[k], base[k] ?? DEFAULTS[k] ?? 50))
+    // 纯数字的场景是历史脏值（清空输入框时 Number('') === 0），直接扔掉
+    const scene = String(out.scene ?? base.scene ?? '').slice(0, 40)
+    out.scene = /^\d+$/.test(scene.trim()) ? '' : scene
+    out.pausedUntil = num(out.pausedUntil, 0)
+    out.lastPeak = String(out.lastPeak ?? '')
+    out.lastLonelyAt = num(out.lastLonelyAt, 0)
+    out.aftercareUntil = num(out.aftercareUntil, 0)
+    out.everContacted = out.everContacted === true
+    out.tickedAt = num(out.tickedAt, num(out.updatedAt, Date.now()))
+    out.lastContactAt = num(out.lastContactAt, num(out.updatedAt, Date.now()))
+    out.events = Array.isArray(out.events) ? out.events.filter((e) => e && Object.hasOwn(EVENTS, String(e.name ?? ''))).slice(-24) : []
+    out.grudges = Array.isArray(out.grudges)
+      ? out.grudges.filter((g) => g && Object.hasOwn(EVENTS, String(g.name ?? '')) && num(g.t) + num(g.days, 1) * 86_400_000 > Date.now()).slice(-3)
+      : []
+    out.firsts = out.firsts && typeof out.firsts === 'object' ? out.firsts : {}
+    out.updatedAt = num(out.updatedAt, Date.now())
+    return out
+  }
+
+  /** 落盘快照：只在写文件时取两位小数，内存里保持连续值（否则每分钟 0.005 的衰减会被抹平）。 */
+  function snapState() {
+    const out = { ...state }
+    for (const k of VALUE_KEYS) out[k] = round2(out[k])
+    return out
+  }
+
+  let state = readJson(stateFile, null)
+  // state 优先于 base：重启不能把运行时数值换回初始值
+  state = normalizeState(
+    state && typeof state === 'object'
+      ? { ...base, ...state }
+      : { ...base, updatedAt: Date.now(), lastPeak: '', pausedUntil: 0 },
+  )
+  // 停机期间的衰减立刻补上（原来是启动就把 updatedAt 设成 now，离线时长全丢了）
+  if (num(state.pausedUntil) <= Date.now()) state = normalizeState(nextState(state, settings(), Date.now()))
+  writeJson(stateFile, snapState(), logger)
 
   const history = readJson(historyFile, [])
+  let lastHistoryWriteAt = 0
+
+  // ── 心情日记：只写不推。谁想看就自己来读（面板 / /api/diary / 工具 / 文件）──
+  let diary = pruneDiary(readJson(diaryFile, { days: {} }))
+  const saveDiary = () => writeJson(diaryFile, diary, logger)
 
   // ── 生图后端：探测 + 可选自动拉起（失败只降级，不影响聊天）──
-  const comfy = { up: false, checkedAt: 0, url: '', error: '' }
+  // known=false 表示「没探测过」：这时注入里不许出现任何生图判断句，
+  // 否则会像 1.0.0 那样把「还没探测」写成「图床没开」，她从此不敢生图。
+  const comfy = { up: false, known: false, checkedAt: 0, url: '', error: '' }
   let lastLaunchAt = 0
-  globalThis.__dshComfyUp = false
+  globalThis.__dshComfyUp = null
 
   const launchComfy = () => {
     const eff = settings()
     const script = String(eff?.comfyLaunchScript ?? '').trim()
     if (!script || !existsSync(script)) return false
+    // 只认脚本/可执行文件，并且必须落在白名单目录里。
+    // 面板令牌能读 localStorage，等于能被同源脚本拿到；不设这道门，
+    // 拿到令牌就能让这台机器跑任意文件。
+    if (!/\.(ps1|bat|cmd|exe)$/i.test(script)) {
+      logger.warn?.(`[dsh-longing] 拒绝启动：只接受 .ps1/.bat/.cmd/.exe，拿到的是 ${script}`)
+      return false
+    }
+    const allowDir = String(eff?.comfyLaunchAllowDir ?? '<path>').trim()
+    if (allowDir) {
+      const under = resolve(script).toLowerCase().startsWith(resolve(allowDir).toLowerCase() + sep)
+      if (!under) {
+        logger.warn?.(`[dsh-longing] 拒绝启动：${script} 不在允许目录 ${allowDir} 下`)
+        return false
+      }
+    }
     if (Date.now() - lastLaunchAt < 10 * 60_000) return false
     try {
-      const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], {
+      // RemoteSigned 而不是 Bypass：本地自己写的脚本照常跑，
+      // 从网上下载来的（带下载标记）要求签名 —— 那正是该拦的。
+      const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', script], {
         detached: true,
         stdio: 'ignore',
         windowsHide: true,
@@ -198,13 +314,34 @@ export function apply(ctx, config) {
 
   async function probeComfy() {
     const eff = settings()
-    if (eff?.comfyEnabled === false) return
-    const base = String(eff?.comfyBaseUrl ?? 'http://127.0.0.1:8188').replace(/\/+$/, '')
-    comfy.url = base
+    // comfyEnabled 只关「自动探测/拉起」，不代表后端不可用 —— 关掉时按未知处理
+    if (eff?.comfyEnabled === false) {
+      comfy.known = false
+      comfy.checkedAt = Date.now()
+      globalThis.__dshComfyUp = null
+      return
+    }
+    const baseUrl = String(eff?.comfyBaseUrl ?? 'http://127.0.0.1:8188').replace(/\/+$/, '')
+    comfy.url = baseUrl
+    // 只允许本机：这项配置能让服务端代发 GET，
+    // 填一个内网地址就变成端口探测器（还能从 error 里读回主机名）。
+    let hostOk = false
+    try {
+      const u = new URL(baseUrl)
+      hostOk = (u.protocol === 'http:' || u.protocol === 'https:') && ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(u.hostname)
+    } catch {}
+    if (!hostOk) {
+      comfy.up = false
+      comfy.known = true
+      comfy.checkedAt = Date.now()
+      comfy.error = '只允许本机地址（127.0.0.1 / localhost）'
+      globalThis.__dshComfyUp = false
+      return
+    }
     try {
       const ac = new AbortController()
       const timer = setTimeout(() => ac.abort(), 1500)
-      const res = await fetch(`${base}/system_stats`, { signal: ac.signal })
+      const res = await fetch(`${baseUrl}/system_stats`, { signal: ac.signal })
       clearTimeout(timer)
       comfy.up = res.ok
       comfy.error = res.ok ? '' : `HTTP ${res.status}`
@@ -212,42 +349,187 @@ export function apply(ctx, config) {
       comfy.up = false
       comfy.error = String(e?.name === 'AbortError' ? 'timeout' : (e?.message ?? e))
     }
+    comfy.known = true
     comfy.checkedAt = Date.now()
     globalThis.__dshComfyUp = comfy.up
     if (!comfy.up && eff?.comfyAutoLaunch) launchComfy()
   }
-  // 注入块：每轮 tick 生成一次，写文件 + 挂到 globalThis，供任何通道插件取用
+
+  // 注入块：每轮 tick / 每次状态变更生成一次，写文件 + 挂到 globalThis，供任何通道插件取用
   const injectFile = join(baseDir, '欲望注入.txt')
   function refreshBlock() {
     const eff = settings()
-    const text = buildBlock(state, eff, { comfyUp: globalThis.__dshComfyUp })
-    try {
-      writeFileSync(injectFile, text, 'utf8')
-    } catch {}
-    globalThis.__dshDesireBlock = text
-    return text
+    const env = { comfyUp: comfy.known ? comfy.up : null }
+    const channels = Array.isArray(eff?.channels) ? eff.channels.map(String) : ['qq']
+    const perChannel = {}
+    for (const ch of channels) {
+      const text = buildBlock(state, eff, { ...env, channel: ch })
+      perChannel[ch] = text
+      writeTextAtomic(join(baseDir, `欲望注入.${ch}.txt`), text, logger)
+    }
+    // 主文件是给「不知道自己叫什么名字」的老式通道插件读的，而它们历来都是 QQ：
+    // 只有 qq 被勾选时主文件才给欲望块，否则给中性块。其余通道读自己的专属文件。
+    const main = channels.includes('qq')
+      ? perChannel.qq
+      : buildBlock(state, eff, { ...env, channel: '__none__' })
+    writeTextAtomic(injectFile, main, logger)
+    globalThis.__dshDesireBlock = main
+    globalThis.__dshDesireBlocks = perChannel
+    return main
   }
   refreshBlock()
+
+  const isPaused = () => num(state.pausedUntil) > Date.now()
+  /** 调试模式：关着的时候数值只能靠聊天养，滑块和工具都改不动。 */
+  const isDebug = () => settings()?.debugMode === true
+
+  const curMode = () => modeOf(state, num(settings()?.resistWeight, 0.5), num(settings()?.affectionWeight, 0.4))
+
+  /** 四档正反馈：0 没有 / 1 心里想 / 2 暗示 / 3 开口 / 4 上手。 */
+  const FEEDBACK_LEVEL = ['', 'feedbackThink', 'feedbackHint', 'feedbackSpeak', 'feedbackAct']
+  function urgeOf(s, cfg) {
+    const eff = effOf(s, num(cfg?.resistWeight, 0.5), num(cfg?.affectionWeight, 0.4))
+    if (eff >= num(cfg?.urgeAct, 85)) return 4
+    if (eff >= num(cfg?.urgeSpeak, 70)) return 3
+    if (eff >= num(cfg?.urgeHint, 55)) return 2
+    if (eff >= num(cfg?.urgeThink, 40)) return 1
+    return 0
+  }
+
+  /**
+   * 被晾着了。
+   *
+   * 两条前提和一条排除：
+   *  - 必须曾经联系过（否则换通道、第一天装都会永久「是不是不要我了」）；
+   *  - 现在在睡觉时间内，一律不算（人在睡，不是冷落）；
+   *  - 计时只算清醒时段：昨晚一点聊完、今早八点起床，中间那七小时不算被晾着。
+   */
+  function isLonely(cfg) {
+    if (isPaused()) return false
+    if (state.everContacted !== true) return false
+    const sleep = String(cfg?.sleepWindow ?? '23:30-08:00')
+    if (inSleepWindow(sleep)) return false
+    const last = num(state.lastContactAt, num(state.updatedAt))
+    // 超过 48 小时就不用再精确了：肯定已经算孤独，只回溯两天免得白循环
+    const from = Math.max(last, Date.now() - 48 * 3_600_000)
+    const awake = awakeHoursBetween(from, Date.now(), sleep)
+    return awake > num(cfg?.lonelyHours, 6) || last < Date.now() - 48 * 3_600_000
+  }
+
+  /**
+   * 面板/工具/通道共用的状态载荷：数值 + 模式 + 每个维度的软上限 + 档位与孤独。
+   * caps 让面板能把「被谁压着」画出来；urge/feedback/lonely 让通道插件知道现在该不该主动。
+   */
+  function statePayload() {
+    const eff = settings()
+    const press = pressureOf(state, eff)
+    const caps = {}
+    const overBy = {}
+    for (const k of VALUE_KEYS) {
+      caps[k] = Math.round(press[k].cap)
+      if (press[k].by && state[k] > press[k].cap) overBy[k] = press[k].by
+    }
+    const urge = urgeOf(state, eff)
+    return {
+      ...state,
+      mode: modeOf(state, num(eff?.resistWeight, 0.5), num(eff?.affectionWeight, 0.4)),
+      caps,
+      overBy,
+      recent: recentEvents(state),
+      debug: eff?.debugMode === true,
+      urge,
+      feedback: urge > 0 ? eff?.[FEEDBACK_LEVEL[urge]] !== false : false,
+      lonely: isLonely(eff),
+      paused: isPaused(),
+      // 她能到哪一步：面板和通道插件都靠这个显示进度，而不是靠猜
+      unlocked: unlockedOf(state, eff).map((u) => ({ key: u.key, name: u.name, ok: u.ok, gap: Math.round(u.gap) })),
+      deepest: deepestUnlocked(state, eff)?.name ?? '',
+      nextGate: nextLocked(state, eff)?.name ?? '',
+    }
+  }
+
+  /** 暂停期间不推进的亲密事件：现实里的「拒绝/冷淡/提别人」照记，但撩拨不算。 */
+  const INTIMATE_EVENTS = new Set(['intimate', 'desire', 'tease', 'coax'])
+
+  /** 会留下「第一次」的事件：只记一次，用来给她一个像样的反应。 */
+  const FIRST_EVENTS = new Set(['intimate', 'desire', 'leave', 'force', 'reject'])
+
+  /**
+   * 施加一次事件（一句话 / 一个举动）并落盘。
+   * 递减、封顶、安全词都在 events.js 里，这里只管接进来和回声。
+   */
+  /** 事件冷却：非调试模式下同一事件 30 秒一次，挡住用 API 当无级滑块刷。 */
+  const lastEventAt = new Map()
+
+  function fireEvent(name) {
+    const key = String(name ?? '').trim()
+    if (!Object.hasOwn(EVENTS, key)) return { ok: false, text: `未知事件：${key || '(空)'}` }
+    if (isPaused() && INTIMATE_EVENTS.has(key)) return { ok: false, text: '已暂停亲密，这条不算' }
+    if (!isDebug()) {
+      const last = lastEventAt.get(key) ?? 0
+      if (Date.now() - last < 30_000) return { ok: false, text: '这一条刚记过，等会儿再说' }
+    }
+    lastEventAt.set(key, Date.now())
+    const r = applyEvent(state, key, settings(), Date.now())
+    state = normalizeState(r.state)
+    // 有人跟她发生了一件事 = 她不是被晾着。否则同一分钟里会先记「被夸过一句」再记「被晾了一整天」。
+    state.lastContactAt = Date.now()
+    state.everContacted = true
+    // 「第一次」只记一次：第一次被碰、第一次被要、第一次听他说要走……
+    if (FIRST_EVENTS.has(key) && !state.firsts[key]) state.firsts = { ...state.firsts, [key]: Date.now() }
+    // 顺手记进当天的日记：好的进「让我高兴的」，坏的进「让我难受的」
+    diary = recordEvent(diary, { name: key, note: r.note, tone: r.tone, now: Date.now() })
+    saveDiary()
+    writeJson(stateFile, snapState(), logger)
+    refreshBlock()
+    return {
+      ok: true,
+      applied: r.applied,
+      mult: r.mult,
+      text: `${EVENTS[key].note}｜${curMode()}`,
+    }
+  }
+  globalThis.__dshLongingEvent = fireEvent
 
   // 通道插件收到主人消息时调一下：涨性欲、涨好感（热重载不重复注册）
   globalThis.__dshLongingNote = (kind) => {
     if (kind !== 'owner') return
+    // 暂停期间不涨 —— 否则「暂停」只是个标签
+    if (isPaused()) return
     const eff = settings()
-    state.lust = clamp(Number(state.lust) + Number(eff?.interactionLust ?? 2))
-    state.affection = clamp(Number(state.affection ?? DEFAULTS.affection) + Number(eff?.affectionGain ?? 1))
+    const nextLust = clampFloat(num(state.lust, DEFAULTS.lust) + num(eff?.interactionLust, 0.1))
+    const nextAff = clampFloat(num(state.affection, DEFAULTS.affection) + num(eff?.affectionGain, 1))
+    // 已经顶满就不重复写盘（连发多条消息时省掉成串的同步 IO）
+    if (nextLust === state.lust && nextAff === state.affection) return
+    state.lust = nextLust
+    state.affection = nextAff
+    state.lastContactAt = Date.now() // 「被晾着多久」从这里算
+    state.everContacted = true // 有过一次联系才谈得上「被晾着」
     state.updatedAt = Date.now()
-    writeJson(stateFile, state, logger)
+    writeJson(stateFile, snapState(), logger)
     refreshBlock()
   }
 
-  probeComfy().catch(() => {})
-  const comfyTimer = setInterval(() => probeComfy().catch(() => {}), Math.max(15, Number(settings()?.comfyProbeSec ?? 60)) * 1000)
+  probeComfy()
+    .catch(() => {})
+    .finally(() => refreshBlock()) // 探测结果出来了再刷一次，别让首帧的「未知」留到下一分钟
+  const comfyTimer = setInterval(async () => {
+    await probeComfy().catch(() => {})
+    refreshBlock()
+  }, Math.max(15, num(settings()?.comfyProbeSec, 60)) * 1000)
   comfyTimer?.unref?.()
-  ctx?.on?.('dispose', () => clearInterval(comfyTimer))
-
-  function settings() {
-    return { ...config, ...readJson(cfgFile, {}) }
-  }
+  ctx?.on?.('dispose', () => {
+    disposed = true
+    clearInterval(comfyTimer)
+    if (webTimer) clearTimeout(webTimer)
+    if (toolTimer) clearTimeout(toolTimer)
+    // 全局入口也要摘掉：不然热重载后通道插件还调着旧闭包，用过期 state 覆盖注入文件
+    for (const k of ['__dshDesireBlock', '__dshDesireBlocks', '__dshLongingNote', '__dshLongingEvent', '__dshLongingState', '__dshLongingRefresh', '__dshLongingDiary', '__dshLongingDiaryText', '__dshComfyUp', '__dshQqLastOwnerAt', '__dshLongingInternals']) {
+      try {
+        delete globalThis[k]
+      } catch {}
+    }
+  })
 
   function tick() {
     const eff = settings()
@@ -260,30 +542,42 @@ export function apply(ctx, config) {
       for (const [sid, expire] of owners) if (Number(expire) < nowTs) owners.delete(sid)
     }
     // 暂停：冻结数值，只刷新注入（避免恢复后一次性补偿衰减）
-    if (Number(state.pausedUntil ?? 0) > Date.now()) {
+    if (num(state.pausedUntil) > Date.now()) {
       state.updatedAt = Date.now()
-      writeJson(stateFile, state)
+      writeJson(stateFile, snapState(), logger)
       refreshBlock()
       return
     }
     const disk = readJson(stateFile, null)
-    if (disk && Number(disk.updatedAt ?? 0) > Number(state.updatedAt ?? 0)) state = { ...state, ...disk }
-    const now = Date.now()
-    const dtHours = Math.min(24, Math.max(0, (now - Number(state.updatedAt ?? now)) / 3_600_000))
-    const peak = inWindow(parseWindow(eff?.peakWindow))
-    const decay = peak ? Number(eff?.nightDecayPerHour ?? 6) * 0.25 : Number(eff?.decayPerHour ?? 3)
-    state.lust = clamp(state.lust - decay * dtHours)
-    state.affection = clamp(Number(state.affection ?? DEFAULTS.affection) - Number(eff?.affectionDecay ?? 0.3) * dtHours)
-    if (peak && state.lastPeak !== todayKey()) {
-      state.lust = clamp(state.lust + Number(eff?.peakBonus ?? 25))
-      state.lastPeak = todayKey()
+    if (disk && num(disk.updatedAt) > num(state.updatedAt)) state = normalizeState({ ...state, ...disk })
+    state = normalizeState(nextState(state, eff, Date.now()))
+
+    // 被晾着：超过 lonelyHours 没有消息 → 一天最多记一次失望。
+    // 按「距上次间隔」而不是按日期：23:50 和次日 00:10 不该算两次。
+    const lonelyGapOk = Date.now() - num(state.lastLonelyAt) > 12 * 3_600_000
+    if (isLonely(eff) && lonelyGapOk) {
+      const r = applyEvent(state, 'neglect', eff, Date.now())
+      state = normalizeState({ ...r.state, lastLonelyAt: Date.now() })
+      diary = recordEvent(diary, { name: 'neglect', note: r.note, tone: r.tone, now: Date.now() })
+      saveDiary()
+      logger.info?.('[dsh-longing] 一天没说话，记了一次失望')
     }
-    state.updatedAt = now
-    writeJson(stateFile, state)
-    refreshBlock();
-    history.push({ t: now, l: state.lust, d: state.lewd, p: state.possess })
+
+    writeJson(stateFile, snapState(), logger)
+    refreshBlock()
+
+    history.push({
+      t: state.updatedAt,
+      l: Math.round(state.lust),
+      d: Math.round(state.lewd),
+      p: Math.round(state.possess),
+      a: Math.round(state.affection),
+    })
     while (history.length > HISTORY_MAX) history.shift()
-    writeJson(historyFile, history)
+    if (Date.now() - lastHistoryWriteAt >= HISTORY_WRITE_MS) {
+      lastHistoryWriteAt = Date.now()
+      writeJson(historyFile, history)
+    }
   }
 
   const timer = setInterval(tick, TICK_MS)
@@ -299,19 +593,34 @@ export function apply(ctx, config) {
     }
     const json = (res, obj) => send(res, 200, JSON.stringify(obj))
     const body = (req) =>
-      new Promise((resolve) => {
-        let raw = ''
+      new Promise((settle) => {
+        const chunks = []
+        let size = 0
+        let done = false
+        // 超限时也要 resolve：否则 destroy 之后 end 不触发，这个请求会永远挂住
+        const finish = (v) => {
+          if (done) return
+          done = true
+          settle(v)
+        }
         req.on('data', (c) => {
-          raw += c
-          if (raw.length > 262144) req.destroy() // 256KB 上限，挡误发的巨型 payload
+          chunks.push(c)
+          size += c.length
+          if (size > 262144) {
+            finish({})
+            req.destroy()
+          }
         })
         req.on('end', () => {
           try {
-            resolve(JSON.parse(raw || '{}'))
+            // 必须拼成 Buffer 再解码：raw += c 会让多字节中文在分片边界被截断，
+            // JSON.parse 失败后静默返回 {}，面板提交中文日记时就是这样丢的。
+            finish(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'))
           } catch {
-            resolve({})
+            finish({})
           }
         })
+        req.on('error', () => finish({}))
       })
 
     const here = dirname(fileURLToPath(import.meta.url))
@@ -338,18 +647,32 @@ export function apply(ctx, config) {
         }
         if (url.startsWith('/dsh-longing/api/state')) {
           if (req.method === 'POST') {
-            const p = await body(req)
-            for (const k of ['lust', 'lewd', 'possess', 'shame', 'resist', 'fatigue', 'affection']) {
-              if (p[k] === undefined) continue
-              state[k] = clamp(p[k]) // 面板由用户直接控制，不限幅
+            if (!isDebug()) {
+              return send(res, 403, JSON.stringify({ error: 'debug off', hint: '数值只能靠聊天养。要直接改先开调试模式。' }))
             }
-            if (p.scene !== undefined) state.scene = String(p.scene).slice(0, 40)
+            const p = await body(req)
+            for (const k of VALUE_KEYS) {
+              if (p[k] === undefined) continue
+              state[k] = clampFloat(p[k]) // 面板是用户直接控制，不按 STEP_LIMIT 限幅
+            }
+            if (p.scene !== undefined) state.scene = String(p.scene ?? '').slice(0, 40)
+            if (p.pausedUntil !== undefined) state.pausedUntil = Math.max(0, num(p.pausedUntil, 0))
             state.updatedAt = Date.now()
-            if (!writeJson(stateFile, state, logger)) {
+            if (!writeJson(stateFile, snapState(), logger)) {
               return send(res, 500, JSON.stringify({ error: 'write failed', hint: '状态文件可能被记事本等程序占用' }))
             }
+            refreshBlock()
           }
-          return json(res, { ...state, mode: modeOf(state) })
+          return json(res, statePayload())
+        }
+        if (url.startsWith('/dsh-longing/api/resume')) {
+          state.pausedUntil = 0
+          state.updatedAt = Date.now()
+          if (!writeJson(stateFile, snapState(), logger)) {
+            return send(res, 500, JSON.stringify({ error: 'write failed', hint: '状态文件可能被占用' }))
+          }
+          refreshBlock()
+          return json(res, statePayload())
         }
         if (url.startsWith('/dsh-longing/api/config/meta')) {
           const cur = readJson(cfgFile, {})
@@ -365,7 +688,8 @@ export function apply(ctx, config) {
             for (const k of Array.isArray(p?.keys) ? p.keys : []) delete cur[k]
             writeJson(cfgFile, cur, logger)
           }
-          return json(res, settings())
+          refreshBlock()
+          return json(res, publicSettings())
         }
         if (url.startsWith('/dsh-longing/api/config')) {
           if (req.method === 'POST') {
@@ -373,33 +697,74 @@ export function apply(ctx, config) {
             const cur = readJson(cfgFile, {})
             const patch = {}
             for (const [k, v] of Object.entries(p ?? {})) {
-              if (!ALLOWED_KEYS.has(k)) continue // 只收 schema 里真有的键
-              if (k === 'channels') patch.channels = (Array.isArray(v) ? v : []).map(String).filter(Boolean).slice(0, 8)
+              if (!ALLOWED_KEYS.has(k)) continue // 状态键在这里就被挡掉，不会被写进配置
+              // 通道名要拼进文件名（欲望注入.<ch>.txt），必须过白名单：
+              // 否则 "..\\..\\Users\\x\\pwn" 能穿出状态目录写任意 .txt。
+              if (k === 'channels') patch.channels = (Array.isArray(v) ? v : []).map((x) => String(x).trim().toLowerCase()).filter((x) => /^[a-z0-9_-]{1,16}$/.test(x)).slice(0, 8)
               else if (k === 'ownerIds') patch.ownerIds = (Array.isArray(v) ? v : String(v ?? '').split(',')).map((x) => String(x).trim()).filter(Boolean).slice(0, 20)
               else if (NUM_KEYS.has(k)) { const n = Number(v); if (Number.isFinite(n)) patch[k] = n }
               else if (BOOL_KEYS.has(k)) patch[k] = Boolean(v)
               else patch[k] = String(v ?? '').slice(0, 400)
             }
-            writeJson(cfgFile, { ...cur, ...patch })
+            if (!writeJson(cfgFile, { ...cur, ...patch }, logger)) {
+              return send(res, 500, JSON.stringify({ error: 'write failed', hint: '配置文件可能被占用' }))
+            }
+            refreshBlock()
           }
-          return json(res, settings())
+          return json(res, publicSettings())
         }
         if (url.startsWith('/dsh-longing/api/history')) return json(res, history.slice(-288))
         if (url.startsWith('/dsh-longing/api/preset')) {
           const p = await body(req)
+          if (settings()?.presetsEnabled === false) return json(res, { error: 'presets disabled' })
+          if (!isDebug()) return json(res, { error: 'debug off', hint: '先打开调试模式' })
           const preset = PRESETS[String(p?.name ?? '')] ?? null
           if (preset) {
             Object.assign(state, preset)
             state.updatedAt = Date.now()
-            writeJson(stateFile, state)
+            if (!writeJson(stateFile, snapState(), logger)) {
+              return send(res, 500, JSON.stringify({ error: 'write failed', hint: '状态文件可能被占用' }))
+            }
+            refreshBlock()
           }
-          return json(res, { ...state, mode: modeOf(state) })
+          return json(res, statePayload())
+        }
+        if (url.startsWith('/dsh-longing/api/diary')) {
+          if (req.method === 'POST') {
+            const p = await body(req)
+            const text = String(p?.text ?? '').trim()
+            if (!text) return json(res, { error: 'empty' })
+            diary = addThought(diary, text, Date.now())
+            saveDiary()
+            return json(res, { ok: true, day: recentDiary(diary, 1)[0] })
+          }
+          const q = String(req.url ?? '').split('?')[1] ?? ''
+          const wantDays = num(new URLSearchParams(q).get('days'), num(settings()?.diaryDays, 7))
+          const list = recentDiary(diary, wantDays)
+          return json(res, { days: list, text: list.length ? formatDay(list[0]) : '还没有记录。' })
+        }
+        if (url.startsWith('/dsh-longing/api/event')) {
+          if (req.method === 'POST') {
+            const p = await body(req)
+            return json(res, fireEvent(p?.name))
+          }
+          return json(res, {
+            events: Object.fromEntries(Object.entries(EVENTS).map(([k, v]) => [k, { note: v.note, dims: v.dims }])),
+            recent: recentEvents(state),
+          })
         }
         if (url.startsWith('/dsh-longing/api/pause')) {
           const p = await body(req)
-          state.pausedUntil = Date.now() + Math.min(1440, Math.max(0, Number(p?.minutes ?? 120))) * 60_000
-          writeJson(stateFile, state)
-          return json(res, state)
+          if (settings()?.pauseEnabled === false) return json(res, { error: 'pause disabled' })
+          const minutes = Math.min(1440, Math.max(0, num(p?.minutes, 120)))
+          // 0 分钟 = 立刻恢复
+          state.pausedUntil = minutes > 0 ? Date.now() + minutes * 60_000 : 0
+          state.updatedAt = Date.now()
+          if (!writeJson(stateFile, snapState(), logger)) {
+            return send(res, 500, JSON.stringify({ error: 'write failed', hint: '状态文件可能被占用' }))
+          }
+          refreshBlock()
+          return json(res, statePayload())
         }
         if (url.startsWith('/dsh-longing/api/activity')) {
           const at = Date.now()
@@ -410,6 +775,7 @@ export function apply(ctx, config) {
         if (url.startsWith('/dsh-longing/api/comfy/launch')) {
           const launched = launchComfy()
           await probeComfy().catch(() => {})
+          refreshBlock()
           return json(res, { launched, ...comfy })
         }
         if (url.startsWith('/dsh-longing/api/comfy')) return json(res, comfy)
@@ -420,14 +786,19 @@ export function apply(ctx, config) {
         }
         const f = join(panelDir, 'index.html')
         if (!existsSync(f)) return send(res, 404, 'no panel')
-        return send(res, 200, readFileSync(f), 'text/html; charset=utf-8')
+        // 把令牌文件的绝对路径塞进页面：换了 sessionStorage 之后每次都要重贴，
+        // 至少别让人再去翻目录找那个文件。
+        const html = readFileSync(f, 'utf8').replace('__TOKEN_FILE__', tokenFile.replace(/&/g, '&amp;').replace(/</g, '&lt;'))
+        return send(res, 200, html, 'text/html; charset=utf-8')
       },
     })
   }
 
   // webServer 可能比插件晚就绪：重试几次，拿不到就软失败（状态与工具照常）
   let webTries = 0
+  let webTimer = null
   const tryRegisterWeb = () => {
+    if (disposed) return
     const web = ctx?.get?.('webServer')
     if (web?.register) {
       try {
@@ -439,22 +810,13 @@ export function apply(ctx, config) {
       }
     }
     if (++webTries < 15) {
-      const t = setTimeout(tryRegisterWeb, 2000)
-      t?.unref?.()
+      webTimer = setTimeout(tryRegisterWeb, 2000)
+      webTimer?.unref?.()
       return
     }
     logger.info?.('[dsh-longing] webServer 不可用，面板路由未注册（状态与工具仍可用）')
   }
   tryRegisterWeb()
-
-  function modeOf(s) {
-    // 跟注入层保持一致：看「有效欲望 = 性欲 − 理智×权重」
-    const eff = Math.max(0, Math.min(100, Number(s?.lust ?? 0) - Number(s?.resist ?? 0) * Number(settings()?.resistWeight ?? 0.5)))
-    return eff >= 80 ? '发情' : eff >= 60 ? '主动' : eff >= 40 ? '黏人' : '平静'
-  }
-
-  const tools = ctx?.get?.('tools')
-  if (!tools?.register) return
 
   /** 只认「主人私聊」的会话：由 dsh-qq 在处理主人私聊消息时登记 sessionId（进程内，不落盘）。 */
   function ownerSessionAllowed(exec) {
@@ -466,60 +828,137 @@ export function apply(ctx, config) {
     return until > Date.now()
   }
 
-  tools.register({
-    name: 'qq_longing',
-    description:
-      '读写角色的欲望状态：lust 性欲 / lewd 色情值 / possess 占有值（0-100）。' +
-      'action=get 查看，set 直接设值，bump 增减，preset 套预设（calm/clingy/heat/yandere），pause 暂停亲密。' +
-      '改值需要主人在私聊里先解锁管理员模式。',
-    parameters: {
-      type: 'object',
-      properties: {
-        action: { type: 'string', enum: ['get', 'set', 'bump', 'preset', 'pause'] },
-        lust: { type: 'number' },
-        lewd: { type: 'number' },
-        possess: { type: 'number' },
-        shame: { type: 'number' },
-        resist: { type: 'number' },
-        fatigue: { type: 'number' },
-        affection: { type: 'number' },
-        scene: { type: 'string' },
-        name: { type: 'string' },
-        minutes: { type: 'number' },
-      },
-      required: ['action'],
-    },
-    async execute(args, exec) {
-      const action = String(args?.action ?? 'get')
-      if (action !== 'get' && settings().ownerOnly !== false && !ownerSessionAllowed(exec)) {
-        return { ok: false, text: 'Permission Denied：欲望值只能在主人私聊里改。' }
+  // tools 服务也可能比插件晚就绪：跟面板一样重试，别一次性 return 掉
+  let toolTries = 0
+  let toolTimer = null
+  const tryRegisterTools = () => {
+    if (disposed) return
+    const tools = ctx?.get?.('tools')
+    if (!tools?.register) {
+      if (++toolTries < 15) {
+        toolTimer = setTimeout(tryRegisterTools, 2000)
+        toolTimer?.unref?.()
+      } else {
+        logger.info?.('[dsh-longing] tools 服务不可用，qq_longing 未注册（状态与面板仍可用）')
       }
-      // 工具执行前先同步磁盘：否则会覆盖面板刚保存的值
-      if (action !== 'get') {
-        const disk = readJson(stateFile, null)
-        if (disk && Number(disk.updatedAt ?? 0) > Number(state.updatedAt ?? 0)) {
-          state = { ...state, ...disk }
-        }
-      }
-      if (action === 'preset' && PRESETS[String(args?.name)]) Object.assign(state, PRESETS[String(args.name)])
-      if (action === 'pause') state.pausedUntil = Date.now() + Math.min(1440, Math.max(0, Number(args?.minutes ?? 120))) * 60_000
-      if (action === 'set' || action === 'bump') {
-        for (const k of ['lust', 'lewd', 'possess', 'shame', 'resist', 'fatigue', 'affection']) {
-          if (args?.[k] === undefined) continue
-          const delta = action === 'bump' ? Number(args[k]) : Number(args[k]) - Number(state[k] ?? 0)
-          const capped = Math.max(-STEP_LIMIT, Math.min(STEP_LIMIT, delta))
-          state[k] = clamp(Number(state[k] ?? 0) + capped)
-        }
-      }
-      if (args?.scene !== undefined) state.scene = String(args.scene).slice(0, 40)
-      state.updatedAt = Date.now()
-      if (!writeJson(stateFile, state, logger)) return { ok: false, text: '写状态文件失败（可能被占用）' }
-      return {
-        ok: true,
-        text:
-          `性欲 ${state.lust} / 色情 ${state.lewd} / 占有 ${state.possess} / 羞耻 ${state.shame}` +
-          ` / 理智 ${state.resist} / 疲劳 ${state.fatigue} / 好感 ${state.affection ?? 50}｜${modeOf(state)}`,
-      }
-    },
-  })
+      return
+    }
+    try {
+      tools.register({
+        name: 'qq_longing',
+        description:
+          '读写角色的欲望状态：lust 性欲 / lewd 色情 / possess 占有 / shame 羞耻 / resist 理智 / fatigue 疲劳 / affection 好感（0-100）。' +
+          'action=get 查看。' +
+          'action=events 列出所有「事件」（夸奖/被拒/提别人/说狠话…），action=event 配 name 把刚才发生的事记进数值：' +
+          '他说了什么、做了什么，就用对应事件登记一次，数值和她的语气会跟着变。' +
+          'action=diary 读她最近几天的「心情日记」（高兴的、难受的、心里想的），action=thought 配 text 记一句她的心里话。' +
+          '日记她不会主动说出来，只有主人问才给——主人问「你今天在想什么」「看看日记」时就调这个。' +
+          'action=set/bump/preset 直接改值，只在调试模式打开时可用；平时数值靠聊天里发生的事慢慢养。' +
+          '改值需要主人在私聊里先解锁管理员模式。',
+        parameters: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', enum: ['get', 'set', 'bump', 'preset', 'pause', 'event', 'events', 'diary', 'thought'] },
+            lust: { type: 'number' },
+            lewd: { type: 'number' },
+            possess: { type: 'number' },
+            shame: { type: 'number' },
+            resist: { type: 'number' },
+            fatigue: { type: 'number' },
+            affection: { type: 'number' },
+            scene: { type: 'string' },
+            name: { type: 'string' },
+            text: { type: 'string' },
+            minutes: { type: 'number' },
+          },
+          required: ['action'],
+        },
+        async execute(args, exec) {
+          const action = String(args?.action ?? 'get')
+          const isOwner = settings().ownerOnly === false || ownerSessionAllowed(exec)
+          // get 也收进闸门：群聊里问一句「你现在什么状态」，不该把七个私密数字摆出来。
+          // 非主人只给一个档位词 —— 她还答得上话，但说不出数值。
+          if (action === 'get' && !isOwner) {
+            return { ok: true, text: `现在：${curMode()}（具体数值只在主人私聊里能查）` }
+          }
+          if (!['get', 'events'].includes(action) && settings().ownerOnly !== false && !isOwner) {
+            return { ok: false, text: 'Permission Denied：欲望值只能在主人私聊里改。' }
+          }
+          if (action === 'events') {
+            return {
+              ok: true,
+              text: Object.entries(EVENTS)
+                .map(([k, v]) => `${k}：${v.note}`)
+                .join('\n'),
+            }
+          }
+          if (action === 'diary') {
+            const days = Math.max(1, Math.min(30, num(args?.minutes, num(settings()?.diaryDays, 1))))
+            const list = recentDiary(diary, days)
+            return { ok: true, text: list.length ? list.map(formatDay).join('\n\n') : '还没有记录。' }
+          }
+          if (action === 'thought') {
+            const t = String(args?.text ?? '').trim()
+            if (!t) return { ok: false, text: '写点什么再记。' }
+            diary = addThought(diary, t, Date.now())
+            saveDiary()
+            return { ok: true, text: '记下了。' }
+          }
+          if (action === 'event') {
+            const r = fireEvent(args?.name)
+            return { ok: r.ok, text: r.text }
+          }
+          // 直接改值属于调试功能：关着的时候数值只能靠聊天事件养
+          if (['set', 'bump', 'preset'].includes(action) && !isDebug()) {
+            return {
+              ok: false,
+              text: '调试模式没开：数值只能靠聊天里发生的事慢慢养。要硬改先把 debugMode 打开（面板右上角「调试」）。',
+            }
+          }
+          // 工具执行前先同步磁盘：否则会覆盖面板刚保存的值
+          if (action !== 'get') {
+            const disk = readJson(stateFile, null)
+            if (disk && num(disk.updatedAt) > num(state.updatedAt)) state = normalizeState({ ...state, ...disk })
+          }
+          if (action === 'preset' && PRESETS[String(args?.name)]) Object.assign(state, PRESETS[String(args.name)])
+          if (action === 'pause') {
+            const minutes = Math.min(1440, Math.max(0, num(args?.minutes, 120)))
+            state.pausedUntil = minutes > 0 ? Date.now() + minutes * 60_000 : 0
+          }
+          if (action === 'set' || action === 'bump') {
+            for (const k of VALUE_KEYS) {
+              if (args?.[k] === undefined) continue
+              const delta = action === 'bump' ? Number(args[k]) : Number(args[k]) - num(state[k], 0)
+              const capped = Math.max(-STEP_LIMIT, Math.min(STEP_LIMIT, Number.isFinite(delta) ? delta : 0))
+              state[k] = clampFloat(num(state[k], 0) + capped)
+            }
+          }
+          // scene 只在「改」的动作里接受：action=get 免权限检查，
+          // 要是它也认 scene，任何会话里的模型都能借 get 把原话写进系统提示。
+          if (action !== 'get' && args?.scene !== undefined) state.scene = String(args.scene ?? '').slice(0, 40)
+          state.updatedAt = Date.now()
+          if (!writeJson(stateFile, snapState(), logger)) return { ok: false, text: '写状态文件失败（可能被占用）' }
+          refreshBlock()
+          return {
+            ok: true,
+            text:
+              `性欲 ${Math.round(state.lust)} / 色情 ${Math.round(state.lewd)} / 占有 ${Math.round(state.possess)}` +
+              ` / 羞耻 ${Math.round(state.shame)} / 理智 ${Math.round(state.resist)} / 疲劳 ${Math.round(state.fatigue)}` +
+              ` / 好感 ${Math.round(num(state.affection, 50))}｜${curMode()}` +
+              (isPaused() ? '｜已暂停' : ''),
+          }
+        },
+      })
+    } catch (e) {
+      logger.warn?.(`[dsh-longing] qq_longing 注册失败：${e?.message ?? e}`)
+    }
+  }
+  tryRegisterTools()
+
+  // 暴露给通道插件：一次读全，省得各自拼字符串
+  globalThis.__dshLongingState = () => statePayload()
+  globalThis.__dshLongingRefresh = () => refreshBlock()
+  /** 心情日记：只读。通道插件想让她「提一句昨天」可以拿，但别主动刷屏。 */
+  globalThis.__dshLongingDiary = (days = 3) => recentDiary(diary, days)
+  globalThis.__dshLongingDiaryText = (days = 1) => recentDiary(diary, days).map(formatDay).join('\n\n')
 }
