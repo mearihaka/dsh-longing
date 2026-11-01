@@ -82,7 +82,9 @@ if (dry) {
 
 const newTree = await api(`/repos/${OWNER}/${REPO}/git/trees`, {
   method: 'POST',
-  body: JSON.stringify({ tree }),
+  // base_tree 必传：不传的话新树只含本次推送的文件，没变过的文件会被整棵抹掉
+  // （2026-11-01 就漏掉过 README.md 和 tools/publish.mjs）
+  body: JSON.stringify({ base_tree: headCommit.tree.sha, tree }),
 })
 const message = execSync('git log -1 --pretty=%B', { cwd: REPO_DIR, encoding: 'utf8' }).trim() || 'docs: 更新'
 const commit = await api(`/repos/${OWNER}/${REPO}/git/commits`, {
