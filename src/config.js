@@ -13,6 +13,15 @@ export const ConfigSchema = Schema.object({
     .default(['qq'])
     .description('哪些通道生效：qq / bili / web；没列出的通道完全不注入'),
 
+  // ── 身份与工具名 ──
+  // 这两项是为了让插件不自称某个特定角色：作者自己的名字不该出现在别人的模型面前。
+  personaName: Schema.string()
+    .default('')
+    .description('她的名字：面板标题和工具说明里会用（留空 = 只写「她」，不写名字）'),
+  toolName: Schema.string()
+    .default('longing')
+    .description('注册给模型的工具名；默认 longing。勾了 qq 通道时会额外注册旧名 qq_longing 做兼容'),
+
   // ── 初始数值 ──
   // 注意：这几个是「状态文件不存在时的初始值」，不是可写的配置。
   // 运行时数值只活在状态文件里；面板和 qq_longing 工具改的是状态，不是这里。
@@ -36,9 +45,18 @@ export const ConfigSchema = Schema.object({
   // ── 主动行为 ──
 
   // ── 主动开口（由通道插件执行，这里只给参数）──
-  autoInitiate: Schema.boolean().default(false).description('允许她主动开口（冷场时自己发消息）'),
+  autoInitiate: Schema.boolean().default(false).description('允许她主动开口（冷场时自己发消息）；主动发图也归这一项管'),
   idleTriggerMin: Schema.number().min(1).max(240).default(15).description('冷场多少分钟后可以考虑开口'),
   proactiveMaxPerDay: Schema.number().min(0).max(720).default(8).description('每天最多主动几次'),
+  // 这两个键 1.11.0 只写进了判据，没进 schema 也没进面板可写清单 —— 等于改不动
+  // （ALLOWED_KEYS 会直接把面板提交的键丢掉，然后假装保存成功）。
+  proactivePerHour: Schema.number().min(0).max(720).default(10).description('每小时最多主动几次（0 = 不限）'),
+  proactiveCooldownMin: Schema
+    .number()
+    .min(0)
+    .max(240)
+    .default(0)
+    .description('两次主动之间至少隔多少分钟；0 = 跟「两次主动至少隔」那个键走'),
   quietHours: Schema.string().default('23:30-08:00').description('安静时段（不主动）'),
   urgeThink: Schema.number().min(0).max(100).default(40).description('到多少：开始在心里想'),
   urgeHint: Schema.number().min(0).max(100).default(55).description('到多少：开始暗示'),
@@ -108,12 +126,21 @@ export const ConfigSchema = Schema.object({
   shyLewd: Schema.number().min(0).max(100).default(30).description('色情低于多少会放不开'),
   distantPossess: Schema.number().min(0).max(100).default(30).description('占有低于多少会变得疏离'),
   numbAffection: Schema.number().min(0).max(100).default(30).description('好感低于多少会有距离感'),
-  initiateThreshold: Schema.number().min(0).max(100).default(60).description('低于该性欲值时她不会主动开口'),
+  initiateThreshold: Schema
+    .number()
+    .min(0)
+    .max(100)
+    .default(45)
+    .description('低于该性欲值时她不会主动开口（性欲的时间地板是 30，最高峰也就 55 上下，所以默认 45 —— 原来写 60 等于永远不主动）'),
 
   // ── 强度门槛 ──
   explicitThreshold: Schema.number().min(0).max(100).default(55).description('露骨门槛'),
-  imageThreshold: Schema.number().min(0).max(200).default(140).description('主动要图门槛'),
-  imagesPerDay: Schema.number().min(0).max(20).default(2).description('每天主动发图上限'),
+  imageThreshold: Schema.number()
+    .min(0)
+    .max(200)
+    .default(110)
+    .description('主动发图门槛：性欲 + 色情 合计到多少，她会自己出一张图发过来（0~200）。默认 110 ≈ 性欲 45 + 色情 65；原来 140 在默认曲线下基本到不了'),
+  imagesPerDay: Schema.number().min(0).max(20).default(2).description('每天主动发图上限（张）；0 = 不发'),
   nsfwImages: Schema.boolean().default(false).description('允许成人向图片（默认关）'),
 
   // ── 功能开关 ──
@@ -127,12 +154,13 @@ export const ConfigSchema = Schema.object({
   // ── 质感 ──
   jealousy: Schema.number().min(0).max(100).default(50).description('吃醋敏感度'),
   rejectionPenalty: Schema.number().min(0).max(50).default(15).description('被拒惩罚'),
-  rememberAfterward: Schema.boolean().default(true).description('事后记忆（旧字段，兼容）'),
+  rememberAfterward: Schema.boolean().default(true).description('已弃用：功能和 memoryEnabled 完全重复，留着只为兼容旧配置'),
 
   // ── 安全 ──
   ownerOnly: Schema.boolean().default(true).description('只对主人生效（强烈建议保持开启）'),
   pauseWord: Schema.string().default('停').description('安全词：说出后立刻降回平静'),
-  pausedUntil: Schema.number().default(0).description('暂停到什么时候（毫秒时间戳，面板按钮会改它）'),
+  // pausedUntil 曾是这里的配置项，但运行时只认状态文件里的那一个（面板改它走 /api/pause），
+  // 面板提交也会被 ALLOWED_KEYS 挡掉 —— 是个「看起来能配、坏了会误导人」的死键，删掉。
 
   // ── 人设 ──
   personaNote: Schema.string()
@@ -145,13 +173,13 @@ export const ConfigSchema = Schema.object({
   comfyAutoLaunch: Schema.boolean().default(false).description('检测不到时自动拉起 ComfyUI'),
   comfyLaunchScript: Schema.string().default('').description('启动脚本路径（.ps1 / .bat / .cmd / .exe）'),
   comfyLaunchAllowDir: Schema.string()
-    .default('<path>')
-    .description('只允许执行这个目录下的启动脚本（留空 = 不限制）。防止面板令牌被拿走后用来跑任意文件'),
+    .default('')
+    .description('只允许执行这个目录下的启动脚本（留空 = 不限制）。防止面板令牌被拿走后用来跑任意文件；装完建议改成你自己的目录'),
   comfyProbeSec: Schema.number().min(15).max(600).default(60).description('探测间隔（秒）'),
 
   // ── 存储 ──
   migrateFrom: Schema.string().default('').description('可选：旧版状态目录（首次启动时把 欲望状态.json 等搬过来，只搬一次）'),
   statePath: Schema.string()
     .default('')
-    .description('状态文件路径；留空 = 进程工作目录下的 workspace/（建议显式配一个）'),
+    .description('状态文件路径；留空 = dshHomePath / DSH_HOME / ~/.dsh 下的 dsh-longing（也可以用 DSH_LONGING_DIR 环境变量）'),
 })

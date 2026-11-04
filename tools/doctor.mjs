@@ -1,17 +1,20 @@
 /**
- * 体检：一条命令看完 dsh-longing + dsh-qq 补丁 + 运行态。
+ * 体检：一条命令看完 dsh-longing + （可选）通道补丁 + 运行态。
  *
  *   node tools/doctor.mjs
  *   node tools/doctor.mjs --panel http://127.0.0.1:60839/dsh-longing
+ *   DSH_LONGING_DIR=/path/to/state node tools/doctor.mjs
+ *   DSH_QQ_SRC=/path/to/dsh-qq-onebot/src node tools/doctor.mjs
  *
+ * 路径全部从环境变量/参数推断，见 tools/_paths.mjs；没配通道插件就跳过那一节。
  * 只读，不改任何东西。装完插件、重启完、觉得哪里不对的时候先跑这个。
  */
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { channelSrc, srcDir as SELF, stateDir } from './_paths.mjs'
 
-const WS = '<path>/dsh-qq/workspace'
-const QQ = 'C:/Users/user/.dsh/profiles/desktop/node_modules/dsh-qq-onebot/src'
-const SELF = '<path>/dsh-longing/src'
+const WS = stateDir()
+const QQ = channelSrc()
 
 const panelArg = process.argv.indexOf('--panel')
 const PANEL = panelArg > 0 ? process.argv[panelArg + 1] : ''
@@ -36,25 +39,29 @@ for (const f of ['index.js', 'prompt.js', 'curve.js', 'events.js', 'diary.js', '
   else bad(`longing/src/${f}`, '缺文件')
 }
 
-// ── 2. dsh-qq 补丁 ──
-const inbound = read(join(QQ, 'inbound.js'))
-const outbound = read(join(QQ, 'outbound.js'))
-const indexJs = read(join(QQ, 'index.js'))
-const promptsJs = read(join(QQ, 'prompts.js'))
+// ── 2. 通道补丁（可选：只有装了 dsh-qq-onebot 才有这一节）──
+if (!QQ) {
+  ok('通道补丁', '跳过：没设 DSH_QQ_SRC（这个插件本身不需要通道补丁）')
+} else {
+  const inbound = read(join(QQ, 'inbound.js'))
+  const outbound = read(join(QQ, 'outbound.js'))
+  const indexJs = read(join(QQ, 'index.js'))
+  const promptsJs = read(join(QQ, 'prompts.js'))
 
-const patches = [
-  ['qq: 主人私聊登记 + 涨值', inbound.includes('__dshLongingNote')],
-  ['qq: 事件判定', inbound.includes('__dshLongingEvent')],
-  ['qq: 读欲望注入.txt', inbound.includes('欲望注入')],
-  ['qq: 拆条不把 … 当边界', !outbound.includes('[。！？!?…')],
-  ['qq: 整段发送前剪尾', outbound.includes('trimFillerTail')],
-  ['qq: qq_send 直发也剪尾', indexJs.includes('trimFillerTail')],
-  ['qq: 私聊框架句改过', promptsJs.includes('只写你自己要回的那一句')],
-  ['qq: 禁止「嗯…」收尾', promptsJs.includes('不要在结尾加「嗯…」')],
-  ['qq: desire-events 存在', exists(join(QQ, 'desire-events.js'))],
-  ['qq: shared/trim.js 存在', exists(join(QQ, 'shared', 'trim.js'))],
-]
-for (const [name, pass] of patches) pass ? ok(name) : bad(name, '补丁丢了，见 patches/dsh-qq/README.md')
+  const patches = [
+    ['qq: 主人私聊登记 + 涨值', inbound.includes('__dshLongingNote')],
+    ['qq: 事件判定', inbound.includes('__dshLongingEvent')],
+    ['qq: 读欲望注入.txt', inbound.includes('欲望注入')],
+    ['qq: 拆条不把 … 当边界', !outbound.includes('[。！？!?…')],
+    ['qq: 整段发送前剪尾', outbound.includes('trimFillerTail')],
+    ['qq: qq_send 直发也剪尾', indexJs.includes('trimFillerTail')],
+    ['qq: 私聊框架句改过', promptsJs.includes('只写你自己要回的那一句')],
+    ['qq: 禁止「嗯…」收尾', promptsJs.includes('不要在结尾加「嗯…」')],
+    ['qq: desire-events 存在', exists(join(QQ, 'desire-events.js'))],
+    ['qq: shared/trim.js 存在', exists(join(QQ, 'shared', 'trim.js'))],
+  ]
+  for (const [name, pass] of patches) pass ? ok(name) : bad(name, '补丁丢了，见 patches/dsh-qq/README.md')
+}
 
 // ── 3. 注入文件新鲜度 ──
 const injectPath = join(WS, '欲望注入.txt')

@@ -38,7 +38,7 @@ export const EVENTS = {
 
   // ── 不好的 ──
   cold: { tone: 'bad', dims: { affection: -1, lust: -1.5, possess: 0.5, shame: 0.5 }, note: '被冷了一下，热乎劲退了' },
-  reject: { tone: 'bad', dims: { lust: -3, resist: 4, affection: -1, shame: 1.5, fatigue: 1 }, note: '刚被拒绝过，身体先凉了半截' },
+  reject: { tone: 'bad', dims: { lust: -3, resist: 4, affection: -1, shame: 1.5, fatigue: 1 }, note: '刚被拒绝过，身体先凉了半截', scaleBy: 'rejectionPenalty' },
   ignore: { tone: 'bad', dims: { affection: -1.5, possess: 1, lust: -1 }, note: '被晾了一会儿，心里存着事' },
   mentionOther: { tone: 'bad', dims: { possess: 2.5, affection: -1, lust: -0.5, resist: -1 }, note: '他刚提到别人，心口一直发紧' },
   compare: { tone: 'bad', grudge: 1, dims: { affection: -2, possess: 1.5, shame: -1, resist: 1 }, note: '被拿去跟人比了，脸上挂不住' },
@@ -98,7 +98,10 @@ export function applyEvent(prev, name, cfg = {}, now = Date.now()) {
   const def = EVENTS[key]
   const gainRaw = Number(cfg?.eventGain)
   const gain = Number.isFinite(gainRaw) && gainRaw >= 0 ? gainRaw : 1
-  const mult = eventMultiplier(prev, name, now) * gain
+  // 2026-11-04：rejectionPenalty（被拒惩罚）以前没人读 —— reject 那条事件的
+  // 数值是硬编码的。现在按它缩放：15 = 默认（比例 1），调到 30 就是双倍。
+  const scale = def.scaleBy === 'rejectionPenalty' ? Math.max(0, Math.min(3, num(cfg?.rejectionPenalty, 15) / 15)) : 1
+  const mult = eventMultiplier(prev, name, now) * gain * scale
   const s = { ...prev }
   const applied = {}
 

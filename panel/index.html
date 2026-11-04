@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>角色 · 欲望面板</title>
+<title>__PERSONA__欲望面板</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -46,13 +46,13 @@
   .caphint .over { color:#ff7b7b; font-weight:600; }
 </style>
 </head>
-<body>
+<body data-token-file="__TOKEN_FILE__">
 <div class="wrap">
   <div class="clock">
     <div class="time" id="clockTime">--:--</div>
     <div class="date" id="clockDate"></div>
   </div>
-  <h1>角色 · 欲望面板</h1>
+  <h1>__PERSONA__欲望面板</h1>
   <div class="sub">由插件自带，改完立即生效。 <span id="mode" class="pill">加载中…</span> <span id="paused" class="pill" style="display:none">已暂停</span> <span id="aftercare" class="pill" style="display:none;background:rgba(255,140,180,.2);border-color:rgba(255,140,180,.45)">余韵中</span> <button id="debugToggle" class="ghost" style="margin-left:14px;padding:3px 12px;font-size:12px">调试模式：关</button> <span id="debugHint" class="muted"></span></div>
 
   <div class="content">
@@ -63,7 +63,7 @@
       <button id="saveToken">解锁面板</button>
       <span id="authMsg" class="muted"></span>
     </div>
-    <p class="muted">令牌文件：<code id="tokenPath">__TOKEN_FILE__</code> <button id="copyPath" class="ghost" style="padding:1px 8px;font-size:12px">复制路径</button> <span id="copyMsg" class="muted"></span></p>
+    <p class="muted">令牌文件：<code id="tokenPath"></code> <button id="copyPath" class="ghost" style="padding:1px 8px;font-size:12px">复制路径</button> <span id="copyMsg" class="muted"></span></p>
     <p class="muted">令牌只存在本机。这一版起改成「只记住到关掉标签页」——同一个标签页里刷新不用重贴，关掉浏览器才需要。</p>
   </div>
 
@@ -178,6 +178,8 @@
       <label class="check"><input type="checkbox" id="autoInitiate" /> 允许她主动开口</label>
       <label class="field"><span>冷场多少分钟后可以开口</span><input type="number" id="idleTriggerMin" min="1" max="240" /></label>
       <label class="field"><span>每天最多几次</span><input type="number" id="proactiveMaxPerDay" min="0" max="720" /></label>
+      <label class="field"><span>每小时最多几次（0 = 不限）</span><input type="number" id="proactivePerHour" min="0" max="720" /></label>
+      <label class="field"><span>两次至少隔（分钟，0 = 跟下面那个走）</span><input type="number" id="proactiveCooldownMin" min="0" max="240" /></label>
       <label class="field"><span>安静时段</span><input type="text" id="quietHours" placeholder="23:30-08:00" /></label>
       <label class="field"><span>低于这个性欲值不主动</span><input type="number" id="initiateThreshold" min="0" max="100" /></label>
       <label class="field"><span>开始在心里想（性欲）</span><input type="number" id="urgeThink" min="0" max="100" /></label>
@@ -192,6 +194,9 @@
       <label class="field"><span>离不开（好感）</span><input type="number" id="affectionDevoted" min="0" max="100" /></label>
     </div>
     <p class="muted">说不说、说什么由她自己决定；她不想说就沉默。需要通道插件（如 dsh-qq）执行发送。</p>
+    <!-- 2026-11-04：这一栏原来改了不生效（那批键没人读）。现在直接把判据显示出来：
+         此刻能不能主动、为什么不能、今天用了几次 —— 通道插件问的就是同一份。 -->
+    <p id="proactiveNow" class="muted" style="margin-top:6px">判据加载中…</p>
   </div>
 
   <div class="card">
@@ -203,8 +208,8 @@
       <label class="field"><span>开始撑不住（疲劳）</span><input type="number" id="fatigueTired" min="0" max="100" /></label>
       <label class="field"><span>开始口是心非（羞耻）</span><input type="number" id="shameHiding" min="0" max="100" /></label>
       <label class="field"><span>开始半推半就（理智）</span><input type="number" id="resistHolding" min="0" max="100" /></label>
-      <label class="field"><span>主动要图门槛</span><input type="number" id="imageThreshold" min="0" max="200" /></label>
-      <label class="field"><span>每天主动发图上限</span><input type="number" id="imagesPerDay" min="0" max="20" /></label>
+      <label class="field"><span>主动发图门槛（性欲+色情）</span><input type="number" id="imageThreshold" min="0" max="200" /></label>
+      <label class="field"><span>每天主动发图上限（张）</span><input type="number" id="imagesPerDay" min="0" max="20" /></label>
       <label class="check"><input type="checkbox" id="nsfwImages" /> 允许成人向图片</label>
       <label class="check"><input type="checkbox" id="curveEnabled" /> 显示曲线</label>
       <label class="check"><input type="checkbox" id="presetsEnabled" /> 显示预设按钮</label>
@@ -231,7 +236,7 @@
     <div class="row"><div class="label">状态</div><div class="val" id="comfyState" style="font-size:14px">检测中…</div></div>
     <div class="grid">
       <label class="field"><span>地址</span><input type="text" id="comfyBaseUrl" placeholder="http://127.0.0.1:8188" /></label>
-      <label class="field"><span>启动脚本路径（.ps1 / .bat / .exe）</span><input type="text" id="comfyLaunchScript" placeholder="<path>\\ComfyUI-Data\\comfy-launch.ps1" /></label>
+      <label class="field"><span>启动脚本路径（.ps1 / .bat / .exe）</span><input type="text" id="comfyLaunchScript" placeholder="例：D:\\ComfyUI\\run_nvidia_gpu.bat（你自己的路径）" /></label>
       <label class="field"><span>探测间隔（秒）</span><input type="number" id="comfyProbeSec" min="15" max="600" /></label>
       <label class="check"><input type="checkbox" id="comfyEnabled" /> 启用探测</label>
       <label class="check"><input type="checkbox" id="comfyAutoLaunch" /> 检测不到时自动拉起</label>
@@ -245,7 +250,7 @@
 
   <div class="card">
     <h2>人设补丁</h2>
-    <textarea id="personaNote" placeholder="例：只在私聊里主动；被拒绝会闹脾气；不喜欢被叫妹妹以外的称呼。"></textarea>
+    <textarea id="personaNote" placeholder="例：只在私聊里主动；被拒绝会闹脾气；不喜欢被叫别的称呼。"></textarea>
     <p class="muted">写在这里的话会跟欲望状态一起注入到提示词里，留空则不注入。</p>
   </div>
 
@@ -272,6 +277,17 @@
 const API = '/dsh-longing/api'
 const $ = (id) => document.getElementById(id)
 let TOKEN = sessionStorage.getItem('desireToken') || ''
+// 2026-11-04：桌面快捷键带 ?token=… 直接进来，省得每次粘令牌。
+// 只从本机 URL 里读，token 仍是本地文件里那一串；读完顺手记进 sessionStorage。
+try {
+  const q = new URLSearchParams(location.search).get('token')
+  if (q) {
+    TOKEN = q.trim()
+    sessionStorage.setItem('desireToken', TOKEN)
+    // 地址栏里别留着令牌：换掉参数，页面不重载
+    history.replaceState(null, '', location.pathname)
+  }
+} catch {}
 $('token').value = TOKEN
 $('saveToken').onclick = () => {
   TOKEN = $('token').value.trim()
@@ -279,9 +295,12 @@ $('saveToken').onclick = () => {
   boot()
 }
 // 令牌要每次重贴，就别让人再去找路径：复制按钮直接给绝对路径，粘到资源管理器地址栏就能打开
-if (($('tokenPath').textContent || '').includes('__TOKEN_FILE__')) {
-  $('tokenPath').textContent = '（重启 dsh 后这里会显示绝对路径）'
-}
+// 令牌文件的绝对路径由服务端塞进 <body data-token-file>：
+// 占位符不进 <script>，否则「有没有被替换」这句话本身也会被替换掉。
+const TOKEN_FILE_ATTR = document.body.dataset.tokenFile || ''
+$('tokenPath').textContent = TOKEN_FILE_ATTR.includes('__') || !TOKEN_FILE_ATTR
+  ? '（重启 dsh 后这里会显示绝对路径）'
+  : TOKEN_FILE_ATTR
 $('copyPath').onclick = async () => {
   const path = $('tokenPath').textContent || ''
   const msg = $('copyMsg')
@@ -375,6 +394,47 @@ function renderGates(){
   }).join('')
 }
 
+/**
+ * 「主动行为」那一栏到底有没有在管用：直接把判据摊开。
+ * 2026-11-04 之前这些键只写进配置文件，没有任何代码读它们。
+ */
+function renderProactive(){
+  const el = $('proactiveNow'); if (!el) return
+  const p = state.proactive || null
+  if (!p) { el.textContent = '主动判据：插件版本太旧（升级 dsh-longing 后这里会显示状态）'; return }
+  const used = `今天 ${p.usedToday}/${p.limitToday === 0 ? '∞' : p.limitToday}｜这小时 ${p.usedLastHour}/${p.limitPerHour === 0 ? '∞' : p.limitPerHour}`
+  const cold = `冷场 ${p.coldMin} 分钟（门槛 ${p.idleTriggerMin}）`
+  // 发图状态先算好：以前只在「不能主动开口」的分支里画，于是她能开口的时候
+  // 发图那一行整块消失，看着像功能没了。
+  const img = state.image || null
+  const IMG_WHY = { off: '总开关关着', autooff: '「允许她主动开口」没勾', never: '还没聊过', paused: '暂停中', daily: '今天发满了', low: '性欲+色情还不够', inactive: '不在活跃时段', quiet: '安静时段' }
+  const imgLine = !img ? '' : `<div style="margin-top:4px">${img.allowed
+    ? `<span class="ok">✓ 可以主动发图</span>：${img.kindLabel}｜今天 ${img.usedToday}/${img.limitToday === 0 ? '∞' : img.limitToday}｜分数 ${img.score}/${img.threshold}`
+    : `<span class="muted">主动发图：${IMG_WHY[img.reason] || img.reason}（分数 ${img.score}/${img.threshold}）</span>`}</div>`
+  if (p.allowed){
+    el.innerHTML = `<span class="ok">✓ 此刻她可以主动</span>　${used}　${cold}　档位 ${p.tier}` + imgLine
+    return
+  }
+  const why = {
+    off: '「允许她主动开口」没勾',
+    paused: '暂停中',
+    never: '还没聊过，不算冷场',
+    quiet: '在安静时段里',
+    inactive: '不在活跃时段',
+    cold: '冷场还不够久',
+    lowlust: '性欲没到「会主动」的地板',
+    cooldown: '离上一次主动太近',
+    hourly: '这一小时的次数用满了',
+    daily: '今天的次数用满了',
+  }[p.reason] || p.reason
+  let next = ''
+  if (Number(p.nextAt) > Date.now()){
+    const m = Math.max(1, Math.round((Number(p.nextAt) - Date.now()) / 60000))
+    next = `　最早 ${m} 分钟后`
+  }
+  el.innerHTML = `<span class="warn">× 此刻不能主动</span>　因为：${why}${next}　${used}　${cold}` + imgLine
+}
+
 function renderCaps(){
   // 软上限画在滑块上：拉不过去的区间变红，下面写清是谁压着
   const caps = state.caps || {}
@@ -410,6 +470,7 @@ function renderState(){
   renderCaps()
   renderEvents()
   renderGates()
+  renderProactive()
   renderDebug()
   const paused = Number(state.pausedUntil||0) > Date.now()
   $('paused').style.display = paused ? 'inline-block' : 'none'

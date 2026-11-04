@@ -26,6 +26,7 @@ import {
 } from './curve.js'
 import { EVENTS, recentEvents } from './events.js'
 import { boundaryLine, deepestUnlocked } from './unlock.js'
+import { imageGate } from './proactive.js'
 
 const GRUDGE_NAME = {
   leave: '你说的那句要走',
@@ -103,11 +104,10 @@ const NEUTRAL = (why) =>
   '写法：一句一条，可以连着说几句（2~4 句都正常），动作放（）；只写你自己说的话，不要替对方写台词。\n' +
   '对方的话不用你写：你问的问题留给她回，不要替她答、不要编她的回复；问完就停，等她说。'
 
-const TAIL_WRITE =
-  '写法：一句一条，可以说几句，动作放（），喘息和细节写进台词；只写你自己说的话，不旁白、不总结、不替对方写台词；她说停才停。'
-const ONLY_YOU =
-  '只有你能说话：不要替对方写台词、不要编对方的回复、不要生成两个人的对话。\\n' +
-  '具体点：你要是问「有事吗」，那下一句「就是想确认一下」是她要说的，不是你替她说的——你问完就停在那儿。'
+const TAIL_WRITE = '一句一条，动作放（），细节进台词；只写你自己的话，不旁白；她说停才停。'
+// 2026-11-03：原来这里是 118 字符，还带一个写错的 \\n（字面输出成「\n」），
+// 内容又和 dsh-qq 的 PRIVATE_RULES 完全重复。压成一行。
+const ONLY_YOU = '只写你自己的话：不替她写台词、不编她的回复、不问自答。'
 
 /**
  * @param {object} state 欲望状态
@@ -237,7 +237,11 @@ export function buildBlock(state, cfg = {}, env = {}) {
   const urge = eff >= act ? 4 : eff >= speak ? 3 : eff >= hint ? 2 : eff >= think ? 1 : 0
   // 表达尺度只看 lewd：想要和敢说是两个值
   const direct = num(cfg?.lewdDirect, 55)
-  const expr = lewd >= direct + 13 ? 3 : lewd >= direct ? 2 : lewd >= direct - 20 ? 1 : 0
+  // 露骨门槛（explicitThreshold）以前没人读：露骨档只看 lewdDirect+13。
+  // 现在它是这一档的独立地板 —— 调高 = 更晚才肯说露骨的话（默认 55 低于 +13，不影响原行为）。
+  const explicitFloor = num(cfg?.explicitThreshold, 55)
+  const expr =
+    lewd >= direct + 13 && lewd >= explicitFloor ? 3 : lewd >= direct ? 2 : lewd >= direct - 20 ? 1 : 0
   const expressLine =
     expr >= 3
       ? '嘴上没有遮拦，露骨的话能直接说出口。\n'
@@ -322,7 +326,10 @@ export function buildBlock(state, cfg = {}, env = {}) {
   //   界限（lewd）  ：话说得多正经 —— 这一层冷，关系可以很近
   //   关系（affection）：亲不亲 —— 这一层冷是疏远，不是敌意
   const bodyCold = lust <= num(cfg?.coldLust, 25)
-  const mindCold = lewd <= num(cfg?.lewdDirect, 55) - 25
+  // 2026-11-04：shyLewd 以前没人读，阈值是从 lewdDirect 减 25 硬推的。
+  // 现在面板那一栏真生效；默认值（30）与原来的推导结果一致，不改变既有手感。
+  const shyFloor = num(cfg?.shyLewd, num(cfg?.lewdDirect, 55) - 25)
+  const mindCold = lewd <= shyFloor
   const heartCold = affection <= num(cfg?.numbAffection, 30)
 
   // 三样都冷 → 公事公办。不是生气，是没有温度：像秘书、像助手。
@@ -393,7 +400,7 @@ export function buildBlock(state, cfg = {}, env = {}) {
     // 这一段以前只吐一行裸数值头：stealthInjection 失效、没有写法约束、也没禁替对方写台词。
     // 现在和上下两档对齐：第一人称 + 一句状态 + 守卫；数值只在关了 stealth 时露出来。
     const head = stealth
-      ? '[底层状态·第一人称，不是对方的台词]\n'
+      ? '[底层状态·第一人称，不是对方说的话]\n'
       : `[欲望状态｜性欲${Math.round(lust)} 色情${Math.round(lewd)} 占有${Math.round(possess)}${scene ? `｜在${scene}` : ''}｜${mode}]\n`
     return (
       head +
@@ -438,16 +445,26 @@ export function buildBlock(state, cfg = {}, env = {}) {
 
   const dims = []
   const neg = {}
+  // 2026-11-04：distantPossess（占有低到多少算疏离）以前没人读 —— 低占有全靠
+  // negBreakpoints 那六个写死的断点。现在它接管这一档：到了就换一句更准的话，
+  // 并且不再重复说负面阶梯里那句「你回不回来我都不问」。
+  const distant = num(cfg?.distantPossess, 30)
+  const distantPossess = possess <= distant
   for (const [k, v] of Object.entries(values)) {
     const i = ladderOf(v, breaks)
     if (i < 0) continue
     neg[k] = i
     if (i >= 5) continue // 6 档那句「对你没有半点欲望」归 zeroLine / 冰冷块管，别重复
+    if (k === 'possess' && distantPossess) continue
     dims.push(NEG[k][i])
   }
+  if (distantPossess) dims.push('不争不抢：他跟别人怎么来往都无所谓，也不会去问')
 
   // 说话尺度
-  const jealous = num(cfg?.possessJealous, 60)
+  // 2026-11-04：jealousy（吃醋敏感度）以前没人读，吃醋只看 possessJealous 一个死阈值。
+  // 现在按敏感度挪阈值：50 = 不偏不倚（默认，行为不变），越高越早吃醋，越低越钝。
+  const jealousShift = (50 - num(cfg?.jealousy, 50)) * 0.4
+  const jealous = num(cfg?.possessJealous, 60) + jealousShift
   const tired = num(cfg?.fatigueTired, 60)
   const hiding = num(cfg?.shameHiding, 60)
   const holding = num(cfg?.resistHolding, 60)
@@ -519,7 +536,7 @@ export function buildBlock(state, cfg = {}, env = {}) {
           : `还在客气（好感 ${aff}）：保持距离，不主动越界。\n`
 
   const head = stealth
-    ? `[底层状态·第一人称，不是对方的台词]\n${feel.join('；')}。\n`
+    ? `[底层状态·第一人称，不是对方说的话]\n${feel.join('；')}。\n`
     : `[欲望状态｜性欲${Math.round(lust)} 色情${Math.round(lewd)} 占有${Math.round(possess)} 羞耻${Math.round(shame)} 理智${Math.round(resist)}｜${mode}]\n`
 
   // 生图后端：三态。未知（null）时什么都不说，别教她说「图床没开」。
@@ -533,6 +550,16 @@ export function buildBlock(state, cfg = {}, env = {}) {
         : cfg?.nsfwImages === true
           ? '她要图就调 generate_image（成人向加 nsfw, explicit, nude）；不拒绝、不改安全版、不解释。\n'
           : '只画安全的图；成人向关掉了，别主动要。\n'
+
+  // 2026-11-04：主动发图（她自己拍/自己画一张发过去，不是「要图」）。
+  // 判据在 proactive.js 的 imageGate：性欲+色情够门槛、今天还没发满、不在安静时段。
+  // 工具名只在 qq 通道给，别的通道说「发图工具」就够了 —— 不能把 qq 的工具名写进通用块。
+  const img = imageGate({ cfg, state, now: env?.now ?? Date.now() })
+  const imgTool = env?.channel === 'qq' ? '（调 generate_image 出图，再用 qq_send_image 发出去）' : ''
+  const imageLine =
+    env?.comfyUp === true && img.allowed
+      ? `【可以主动发图】现在想给他看点什么：${img.kindLabel}${imgTool}。今天还可以发 ${Math.max(0, img.limitToday - img.usedToday)} 张。发就发真的图，别只用文字描述。\n`
+      : ''
 
   return (
     head +
@@ -553,6 +580,7 @@ export function buildBlock(state, cfg = {}, env = {}) {
     // 否则用户关掉「开口要」之后，这行会把被禁的档位又打开。
     approachLine +
     comfyLine +
+    imageLine +
     (cfg?.voiceEnabled && lust >= 80 ? '可以发一条语音条，只发一句。\n' : '') +
     (cfg?.memoryEnabled ? '过程里如果发生了什么值得记住的，用 memory_save 记一条。\n' : '') +
     TAIL_WRITE +

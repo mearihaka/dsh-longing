@@ -2,15 +2,17 @@
  * 命令行预览：用真实状态文件 + 真实面板配置跑一遍 buildBlock。
  * 面板上「现在到底注入了什么」全靠猜的日子到此为止。
  *
- *   node tools/preview.mjs [workspace目录] [通道] [comfy:on|off|unknown]
+ *   node tools/preview.mjs [状态目录] [通道] [comfy:on|off|unknown]
  *
+ * 状态目录不给就从 DSH_LONGING_DIR / 插件家目录推断（见 tools/_paths.mjs）。
  * 只读，不写任何文件。
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildBlock } from '../src/prompt.js'
+import { stateDir } from './_paths.mjs'
 
-const ws = process.argv[2] || '<path>/dsh-qq/workspace'
+const ws = stateDir(process.argv[2])
 const read = (f, d) => {
   try {
     return JSON.parse(readFileSync(join(ws, f), 'utf8'))

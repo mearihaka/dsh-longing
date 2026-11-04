@@ -1,17 +1,19 @@
 /**
  * 面板监控：盯着 /api/state，值一变就打印一行。
  *
- *   node tools/watch.mjs [面板根地址] [轮询秒]
+ *   node tools/watch.mjs [面板根地址] [轮询秒] [令牌文件]
  *   node tools/watch.mjs http://127.0.0.1:57688/dsh-longing 5
  *
- * 令牌从状态目录的「面板令牌.txt」读，不写死在代码里。
+ * 地址和令牌文件都能用参数覆盖；不给就按老规矩来（本机 60839 / 状态目录里的
+ * 「面板令牌.txt」，目录由 tools/_paths.mjs 推断）。
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { stateDir } from './_paths.mjs'
 
-const base = (process.argv[2] || 'http://127.0.0.1:57688/dsh-longing').replace(/\/+$/, '')
+const base = (process.argv[2] || 'http://127.0.0.1:60839/dsh-longing').replace(/\/+$/, '')
 const every = Math.max(2, Number(process.argv[3]) || 5) * 1000
-const tokenFile = process.argv[4] || '<path>/dsh-qq/workspace/面板令牌.txt'
+const tokenFile = process.argv[4] || join(stateDir(), '面板令牌.txt')
 
 let token = ''
 try {

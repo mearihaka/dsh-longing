@@ -12,6 +12,11 @@ export const STATE_KEYS = [
   'lust', 'lewd', 'possess', 'shame', 'resist', 'fatigue', 'affection',
   'scene', 'pausedUntil', 'lastPeak', 'events', 'lastContactAt', 'lastLonelyAt', 'everContacted',
   'grudges', 'firsts', 'aftercareUntil', 'tickedAt',
+  // 主动开口 / 主动发图的账本也是状态：它们在 1.11.0 漏登记了。
+  // 漏登记的后果和 1.0.0 那个「重启丢进度」一模一样 —— 一旦哪天被写进面板配置，
+  // 下次启动就会拿配置里的旧快照反过来盖掉真实账本（每小时/每天的额度算错）。
+  'proactiveLog', 'lastInitiateAt', 'lastInitiateInfo',
+  'imageLog', 'lastImageAt', 'lastImageInfo',
 ]
 
 /** 六个核心数值维 + 好感，共七个。 */

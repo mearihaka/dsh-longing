@@ -1,12 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { spawn } from 'node:child_process'
+import { homedir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ConfigSchema } from './config.js'
 import { addThought, formatDay, pruneDiary, recentDiary, recordEvent } from './diary.js'
 import { EVENTS, applyEvent, recentEvents } from './events.js'
 import { buildBlock, modeOf } from './prompt.js'
+import { imageGate, noteImage, noteInitiate, proactiveGate } from './proactive.js'
 import { boundaryLine, deepestUnlocked, nextLocked, unlockedOf } from './unlock.js'
 import {
   DIMS,
@@ -51,8 +53,9 @@ const BOOL_KEYS = new Set([
   'couplingEnabled', 'debugMode', 'feedbackThink', 'feedbackHint', 'feedbackSpeak', 'feedbackAct', 'unlocksEnabled',
 ])
 const STR_KEYS = new Set([
-  'channels', 'ownerIds', 'peakWindow', 'activeHours', 'quietHours', 'sleepWindow', 'pauseWord', 'personaNote',
+  'channels', 'peakWindow', 'activeHours', 'quietHours', 'sleepWindow', 'pauseWord', 'personaNote',
   'comfyBaseUrl', 'comfyLaunchScript', 'comfyLaunchAllowDir', 'statePath', 'migrateFrom', 'negBreakpoints',
+  'personaName', 'toolName',
 ])
 // 面板能写的键：写死是为了防止任意键落盘。状态键刻意不在里面。
 const ALLOWED_KEYS = new Set([...NUM_KEYS, ...BOOL_KEYS, ...STR_KEYS])
@@ -139,15 +142,71 @@ function writeTextAtomic(file, text, logger) {
   }
 }
 
-export function apply(ctx, config) {
+/**
+ * 状态目录：优先用 DSH 给的插件家目录。
+ *
+ * 原来默认是 `process.cwd()/workspace` —— 进程从哪个目录启动，状态就落在哪儿。
+ * 桌面版从安装目录启动、命令行从项目目录启动、换一个工作目录再跑一次，
+ * 同一个人手里就会出现好几份互不相干的状态，看着就是「进度没了」。
+ * 这个默认值只在作者的机器上成立（他的 cwd 一直是同一个），所以按开发者视角改掉。
+ *
+ * dshHomePath 这个服务可能返回函数（按插件名取目录），也可能直接是字符串，两种都认。
+ */
+function homeDirOf(ctx, logger) {
+  let dir = ''
+  try {
+    const p = ctx?.get?.('dshHomePath')
+    if (typeof p === 'function') {
+      const v = p(name)
+      if (v) dir = String(v)
+    } else if (typeof p === 'string' && p) {
+      dir = join(p, name)
+    }
+  } catch (e) {
+    logger?.warn?.(`[dsh-longing] 取 dshHomePath 失败，退回 ~/.dsh：${e?.message ?? e}`)
+  }
+  if (!dir) dir = join(process.env.DSH_HOME || join(homedir(), '.dsh'), name)
+  return resolve(dir)
+}
+
+export function apply(ctx, configIn) {
+  const logger = ctx?.logger ?? console
+  // DSH 正常会先把 schema 默认值填好再交给 apply()；但别的插件、脚本、测试直接调 apply()
+  // 时只会拿到调用方写的那几个键 —— 这时面板会变成「只有一项配置」，看起来像插件坏了。
+  // 自己补一次全量默认值，任何入口进来都得到同一份 84 项。
+  const config = (() => {
+    try {
+      return ConfigSchema({ ...(configIn ?? {}) })
+    } catch (e) {
+      logger.warn?.(`[dsh-longing] 配置解析失败，按原样使用：${e?.message ?? e}`)
+      return { ...(configIn ?? {}) }
+    }
+  })()
   const statePath = String(config?.statePath ?? '').trim()
-  // 不写死盘符：没配就用 DSH 运行目录下的 workspace
-  const baseDir = statePath ? dirname(statePath) : join(process.cwd(), 'workspace')
-  const stateFile = statePath || join(baseDir, '欲望状态.json')
+  // 目录优先级：显式 statePath > 环境变量 > 插件家目录。
+  // 绝对不碰任何具体盘符 —— 这里以前是 cwd/workspace。
+  const legacyDir = join(process.cwd(), 'workspace')
+  const envDir = String(process.env.DSH_LONGING_DIR ?? '').trim()
+  const baseDir = statePath ? dirname(resolve(statePath)) : envDir ? resolve(envDir) : homeDirOf(ctx, logger)
+  const stateFile = statePath ? resolve(statePath) : join(baseDir, '欲望状态.json')
   const cfgFile = join(baseDir, '欲望面板配置.json')
   const historyFile = join(baseDir, '欲望历史.json')
   const diaryFile = join(baseDir, '心情日记.json')
-  const logger = ctx?.logger ?? console
+
+  // 换目录不能等于丢进度：老的 cwd/workspace 里有状态而新目录没有，就搬一次。
+  if (!statePath && baseDir !== legacyDir && !existsSync(stateFile) && existsSync(join(legacyDir, '欲望状态.json'))) {
+    try {
+      mkdirSync(baseDir, { recursive: true })
+      for (const f of ['欲望状态.json', '欲望面板配置.json', '欲望历史.json', '心情日记.json', '面板令牌.txt']) {
+        const src = join(legacyDir, f)
+        if (existsSync(src) && !existsSync(join(baseDir, f))) writeFileSync(join(baseDir, f), readFileSync(src))
+      }
+      logger.info?.(`[dsh-longing] 已把状态从 ${legacyDir} 搬到 ${baseDir}`)
+    } catch (e) {
+      logger.warn?.(`[dsh-longing] 状态目录迁移失败，继续用旧目录：${e?.message ?? e}`)
+    }
+  }
+  logger.info?.(`[dsh-longing] 状态目录：${baseDir}`)
 
   // 可选迁移：只有显式配了 migrateFrom 才搬，搬一次就够（不写死任何本机路径）
   const migrateFrom = String(config?.migrateFrom ?? '').trim()
@@ -167,16 +226,35 @@ export function apply(ctx, config) {
 
   // ── 面板配置：只收行为参数，历史遗留的状态键就地清掉 ──
   const rawPanel = readJson(cfgFile, {}) ?? {}
-  const panelCfg = {}
-  for (const [k, v] of Object.entries(rawPanel)) if (!STATE_KEYS.has(k)) panelCfg[k] = v
+  const PANEL_KEY_MARK = '__panelKeys'
+  // 文件里混着两种东西：启动时从插件配置抄过来的快照，和用户在面板上真改过的键。
+  // 分不清的话，用户在 DSH 设置页改的值会被上次启动写下的快照永久盖住 ——
+  // 症状是「设置页改了没反应，只有点面板『恢复默认』才动」，这在别人机器上极难自查。
+  // 所以从 1.12.0 起用 __panelKeys 记下哪些键是面板改的；旧文件没有这个标记，
+  // 就整份当面板改动处理（保持老用户原来的行为）。
+  const panelOverrides = {}
+  const panelKeys = new Set(
+    Array.isArray(rawPanel[PANEL_KEY_MARK]) ? rawPanel[PANEL_KEY_MARK].map(String) : Object.keys(rawPanel),
+  )
+  for (const [k, v] of Object.entries(rawPanel)) {
+    if (k === PANEL_KEY_MARK || STATE_KEYS.has(k) || !panelKeys.has(k)) continue
+    panelOverrides[k] = v
+  }
   const dropped = Object.keys(rawPanel).filter((k) => STATE_KEYS.has(k))
   if (dropped.length) logger.info?.(`[dsh-longing] 面板配置里清掉状态键：${dropped.join(',')}`)
 
-  // 把「配置 + 面板」合并后写回，保证 dsh-qq 只读文件也能看到通道/开关。
-  // 但绝不再写状态键 —— 那是 1.0.0 重启丢进度的根因。
-  const cfgSnapshot = {}
-  for (const [k, v] of Object.entries(config ?? {})) if (!STATE_KEYS.has(k)) cfgSnapshot[k] = v
-  writeJson(cfgFile, { ...cfgSnapshot, ...panelCfg }, logger)
+  /** 把「插件配置 + 面板改动」合并后写回文件：只读文件的通道插件（dsh-qq 等）也能看到通道/开关。 */
+  const flushPanelFile = () => {
+    const snapshot = {}
+    for (const [k, v] of Object.entries(config ?? {})) {
+      if (STATE_KEYS.has(k) || k.startsWith('__')) continue
+      snapshot[k] = v
+    }
+    // 一定要把 writeJson 的结果带回去：调用方靠它决定回 200 还是 500。
+    // 漏了 return 的话「保存设置」永远报失败（面板显示灰色提示），但配置其实写进去了。
+    return writeJson(cfgFile, { ...snapshot, ...panelOverrides, [PANEL_KEY_MARK]: Object.keys(panelOverrides) }, logger)
+  }
+  flushPanelFile()
 
   // 面板令牌：首次生成后落盘，面板首屏输入一次即可。
   const tokenFile = join(baseDir, '面板令牌.txt')
@@ -209,14 +287,14 @@ export function apply(ctx, config) {
   }
 
   function settings() {
-    return { ...config, ...readJson(cfgFile, {}) }
+    return { ...config, ...panelOverrides }
   }
 
   /** 给面板看的设置：剔除状态键，免得上一次配置里的初始值把滑块盖掉。 */
   function publicSettings() {
     const s = settings()
     const out = {}
-    for (const [k, v] of Object.entries(s)) if (!STATE_KEYS.has(k)) out[k] = v
+    for (const [k, v] of Object.entries(s)) if (!STATE_KEYS.has(k) && !k.startsWith('__')) out[k] = v
     return out
   }
 
@@ -231,6 +309,18 @@ export function apply(ctx, config) {
     out.lastLonelyAt = num(out.lastLonelyAt, 0)
     out.aftercareUntil = num(out.aftercareUntil, 0)
     out.everContacted = out.everContacted === true
+    // 主动开口的账本：谁在什么时候说出口的。「每天最多几次」「每小时几次」
+    // 「两次至少隔多久」全靠它算，之前的实现里压根没记过。
+    out.proactiveLog = Array.isArray(out.proactiveLog)
+      ? out.proactiveLog.map(Number).filter((t) => Number.isFinite(t) && t > 0).sort((a, b) => a - b).slice(-64)
+      : []
+    out.lastInitiateAt = num(out.lastInitiateAt, 0)
+    out.lastInitiateInfo = out.lastInitiateInfo && typeof out.lastInitiateInfo === 'object' ? out.lastInitiateInfo : null
+    // 主动发图的账本（每天几张）
+    out.imageLog = Array.isArray(out.imageLog)
+      ? out.imageLog.map(Number).filter((t) => Number.isFinite(t) && t > 0).sort((a, b) => a - b).slice(-32)
+      : []
+    out.lastImageInfo = out.lastImageInfo && typeof out.lastImageInfo === 'object' ? out.lastImageInfo : null
     out.tickedAt = num(out.tickedAt, num(out.updatedAt, Date.now()))
     out.lastContactAt = num(out.lastContactAt, num(out.updatedAt, Date.now()))
     out.events = Array.isArray(out.events) ? out.events.filter((e) => e && Object.hasOwn(EVENTS, String(e.name ?? ''))).slice(-24) : []
@@ -266,6 +356,9 @@ export function apply(ctx, config) {
   // ── 心情日记：只写不推。谁想看就自己来读（面板 / /api/diary / 工具 / 文件）──
   let diary = pruneDiary(readJson(diaryFile, { days: {} }))
   const saveDiary = () => writeJson(diaryFile, diary, logger)
+  // 首启就把日记文件落下来：面板那张卡、README 里的文件表都默认它存在，
+  // 等第一条事件才出现的话，别人会以为日记功能没装好。
+  if (!existsSync(diaryFile)) saveDiary()
 
   // ── 生图后端：探测 + 可选自动拉起（失败只降级，不影响聊天）──
   // known=false 表示「没探测过」：这时注入里不许出现任何生图判断句，
@@ -285,7 +378,9 @@ export function apply(ctx, config) {
       logger.warn?.(`[dsh-longing] 拒绝启动：只接受 .ps1/.bat/.cmd/.exe，拿到的是 ${script}`)
       return false
     }
-    const allowDir = String(eff?.comfyLaunchAllowDir ?? '<path>').trim()
+    // 白名单目录默认空 = 不限制（以前默认是作者机器上的一个固定盘符：别人的机器上
+    // 根本没有这个盘，于是「填了自己的脚本路径也拉不起来」，日志里只有一句「不在允许目录」）。
+    const allowDir = String(eff?.comfyLaunchAllowDir ?? '').trim()
     if (allowDir) {
       const under = resolve(script).toLowerCase().startsWith(resolve(allowDir).toLowerCase() + sep)
       if (!under) {
@@ -440,6 +535,11 @@ export function apply(ctx, config) {
       urge,
       feedback: urge > 0 ? eff?.[FEEDBACK_LEVEL[urge]] !== false : false,
       lonely: isLonely(eff),
+      // 现在能不能主动：面板「主动行为」那几个键就是这里的判据，
+      // 通道插件（dsh-qq 等）只查这一个字段，不再自己另写一套定时器。
+      proactive: proactiveGate({ cfg: eff, state }),
+      // 现在能不能主动发一张图（她自己拍/自己画，不是「要图」）
+      image: imageGate({ cfg: eff, state }),
       paused: isPaused(),
       // 她能到哪一步：面板和通道插件都靠这个显示进度，而不是靠猜
       unlocked: unlockedOf(state, eff).map((u) => ({ key: u.key, name: u.name, ok: u.ok, gap: Math.round(u.gap) })),
@@ -492,8 +592,10 @@ export function apply(ctx, config) {
   globalThis.__dshLongingEvent = fireEvent
 
   // 通道插件收到主人消息时调一下：涨性欲、涨好感（热重载不重复注册）
-  globalThis.__dshLongingNote = (kind) => {
-    if (kind !== 'owner') return
+  // kind 默认 'owner'：别的通道插件通常不会传参数，没传就当主人说话 ——
+  // 原来只认字面 'owner'，不传等于「没联系过」，于是主动判据永远停在 never。
+  globalThis.__dshLongingNote = (kind = 'owner') => {
+    if (kind !== 'owner' && kind !== 'contact') return
     // 暂停期间不涨 —— 否则「暂停」只是个标签
     if (isPaused()) return
     const eff = settings()
@@ -524,7 +626,7 @@ export function apply(ctx, config) {
     if (webTimer) clearTimeout(webTimer)
     if (toolTimer) clearTimeout(toolTimer)
     // 全局入口也要摘掉：不然热重载后通道插件还调着旧闭包，用过期 state 覆盖注入文件
-    for (const k of ['__dshDesireBlock', '__dshDesireBlocks', '__dshLongingNote', '__dshLongingEvent', '__dshLongingState', '__dshLongingRefresh', '__dshLongingDiary', '__dshLongingDiaryText', '__dshComfyUp', '__dshQqLastOwnerAt', '__dshLongingInternals']) {
+    for (const k of ['__dshDesireBlock', '__dshDesireBlocks', '__dshLongingNote', '__dshLongingEvent', '__dshLongingState', '__dshLongingProactive', '__dshLongingMarkInitiate', '__dshLongingPauseWord', '__dshLongingImageGate', '__dshLongingMarkImage', '__dshLongingRefresh', '__dshLongingDiary', '__dshLongingDiaryText', '__dshComfyUp', '__dshQqLastOwnerAt', '__dshLongingInternals']) {
       try {
         delete globalThis[k]
       } catch {}
@@ -645,6 +747,22 @@ export function apply(ctx, config) {
           const tok = String(req.headers['x-desire-token'] ?? '')
           if (!panelToken || !safeEqual(tok, panelToken)) return send(res, 401, 'unauthorized')
         }
+        if (url.startsWith('/dsh-longing/api/proactive')) {
+          // 面板要能看见「为什么不能主动」，不然那栏数值改完像没反应一样。
+          // POST {action:'mark'} 只是手动记一笔，方便调试；正常由通道插件回报。
+          if (req.method === 'POST') {
+            const p = await body(req)
+            if (p?.action === 'mark') {
+              state = normalizeState({ ...state, ...noteInitiate({ state, now: Date.now(), info: { channel: 'panel' } }) })
+              state.updatedAt = Date.now()
+              if (!writeJson(stateFile, snapState(), logger)) {
+                return send(res, 500, JSON.stringify({ error: 'write failed', hint: '状态文件可能被占用' }))
+              }
+              refreshBlock()
+            }
+          }
+          return json(res, proactiveGate({ cfg: settings(), state }))
+        }
         if (url.startsWith('/dsh-longing/api/state')) {
           if (req.method === 'POST') {
             if (!isDebug()) {
@@ -675,41 +793,40 @@ export function apply(ctx, config) {
           return json(res, statePayload())
         }
         if (url.startsWith('/dsh-longing/api/config/meta')) {
-          const cur = readJson(cfgFile, {})
-          const overridden = Object.keys(cur).filter((k) => JSON.stringify(cur[k]) !== JSON.stringify(config?.[k]))
+          const overridden = Object.keys(panelOverrides).filter(
+            (k) => JSON.stringify(panelOverrides[k]) !== JSON.stringify(config?.[k]),
+          )
           return json(res, { overridden })
         }
         if (url.startsWith('/dsh-longing/api/config/reset')) {
           const p = await body(req)
-          const cur = readJson(cfgFile, {})
           if (p?.all === true) {
-            writeJson(cfgFile, {}, logger)
+            for (const k of Object.keys(panelOverrides)) delete panelOverrides[k]
           } else {
-            for (const k of Array.isArray(p?.keys) ? p.keys : []) delete cur[k]
-            writeJson(cfgFile, cur, logger)
+            for (const k of Array.isArray(p?.keys) ? p.keys : []) delete panelOverrides[k]
           }
+          flushPanelFile()
           refreshBlock()
           return json(res, publicSettings())
         }
         if (url.startsWith('/dsh-longing/api/config')) {
           if (req.method === 'POST') {
             const p = await body(req)
-            const cur = readJson(cfgFile, {})
             const patch = {}
             for (const [k, v] of Object.entries(p ?? {})) {
               if (!ALLOWED_KEYS.has(k)) continue // 状态键在这里就被挡掉，不会被写进配置
               // 通道名要拼进文件名（欲望注入.<ch>.txt），必须过白名单：
               // 否则 "..\\..\\Users\\x\\pwn" 能穿出状态目录写任意 .txt。
               if (k === 'channels') patch.channels = (Array.isArray(v) ? v : []).map((x) => String(x).trim().toLowerCase()).filter((x) => /^[a-z0-9_-]{1,16}$/.test(x)).slice(0, 8)
-              else if (k === 'ownerIds') patch.ownerIds = (Array.isArray(v) ? v : String(v ?? '').split(',')).map((x) => String(x).trim()).filter(Boolean).slice(0, 20)
               else if (NUM_KEYS.has(k)) { const n = Number(v); if (Number.isFinite(n)) patch[k] = n }
               else if (BOOL_KEYS.has(k)) patch[k] = Boolean(v)
               else patch[k] = String(v ?? '').slice(0, 400)
             }
-            if (!writeJson(cfgFile, { ...cur, ...patch }, logger)) {
-              return send(res, 500, JSON.stringify({ error: 'write failed', hint: '配置文件可能被占用' }))
-            }
+            Object.assign(panelOverrides, patch)
+            // 落盘失败要如实回报：以前无论成败都回 200 + 设置，面板显示「已保存」但什么都没写。
+            const ok = flushPanelFile()
             refreshBlock()
+            if (!ok) return send(res, 500, JSON.stringify({ error: 'write failed', hint: '配置文件可能被占用' }))
           }
           return json(res, publicSettings())
         }
@@ -788,7 +905,13 @@ export function apply(ctx, config) {
         if (!existsSync(f)) return send(res, 404, 'no panel')
         // 把令牌文件的绝对路径塞进页面：换了 sessionStorage 之后每次都要重贴，
         // 至少别让人再去翻目录找那个文件。
-        const html = readFileSync(f, 'utf8').replace('__TOKEN_FILE__', tokenFile.replace(/&/g, '&amp;').replace(/</g, '&lt;'))
+        const personaLabel = String(settings()?.personaName ?? '').trim().replace(/[<>&"]/g, '').slice(0, 24)
+        const html = readFileSync(f, 'utf8')
+          // 占位符只出现在 <body data-token-file="…"> 里，不再出现在 <script> 里：
+          // 脚本里那句「这个占位符还在不在」会被自己替换掉，逻辑永远为假（1.11.0 的坑）。
+          .replace('__TOKEN_FILE__', tokenFile.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'))
+          // 面板标题不再写死作者的角色名：填了 personaName 就是「名字 · 欲望面板」，没填就是「欲望面板」。
+          .replace(/__PERSONA__/g, personaLabel ? `${personaLabel} · ` : '')
         return send(res, 200, html, 'text/html; charset=utf-8')
       },
     })
@@ -818,14 +941,40 @@ export function apply(ctx, config) {
   }
   tryRegisterWeb()
 
-  /** 只认「主人私聊」的会话：由 dsh-qq 在处理主人私聊消息时登记 sessionId（进程内，不落盘）。 */
+  /**
+   * 只认「主人私聊」的会话。
+   *
+   * 登记由通道插件做（收到主人私聊时调 `__dshLongingOwnerSession(sessionId, ttl)`），
+   * 进程内、不落盘。以前这里只认 dsh-qq 那张 `__dshQqOwnerSessions`：
+   *   · 没装 dsh-qq，或者只跑 web / 别的通道 → 不但没人登记，也没有任何公开的登记口
+   *     → `ownerOnly` 默认 true → set/bump/preset/pause/diary 永久 Permission Denied，
+   *     主人自己也改不动，功能等于不存在；
+   *   · 这就是典型的「只有作者那台机器上能用」，因为作者永远装着 dsh-qq。
+   * 现在两个来源都认：通用表 `__dshLongingOwnerSessions`（Map 或 Set），以及旧表。
+   * 两边都不存在（说明这个装法里没有通道在管主人这件事）→ 放行并警告一次：
+   * 这时 ownerOnly 没有判据可用，硬拦只会把插件整个拦死。
+   */
+  let warnedNoOwnerReg = false
   function ownerSessionAllowed(exec) {
     const sid = exec?.agent?.session?.header?.id ?? exec?.agent?.session?.id
+    const generic = globalThis.__dshLongingOwnerSessions
+    const legacy = globalThis.__dshQqOwnerSessions
+    // dsh-qq 存在 → 由它判；只有通用表存在、但从来没人登记过 → 说明这个装法里
+    // 没有通道在管「谁是主人」，ownerOnly 没有判据可用（详见上面那段注释）。
+    const reg =
+      legacy instanceof Map ? legacy : globalThis.__dshLongingOwnerRegistered === true && generic instanceof Map ? generic : null
+    if (!reg) {
+      if (!warnedNoOwnerReg) {
+        warnedNoOwnerReg = true
+        logger.info?.(
+          '[dsh-longing] 没有通道在登记主人会话：ownerOnly 暂时放行（通道插件收到主人私聊时调 __dshLongingOwnerSession）',
+        )
+      }
+      return true
+    }
     if (!sid) return false
-    const map = globalThis.__dshQqOwnerSessions
-    if (!(map instanceof Map)) return false
-    const until = Number(map.get(String(sid)) ?? 0)
-    return until > Date.now()
+    if (reg instanceof Set) return reg.has(String(sid))
+    return Number(reg.get(String(sid)) ?? 0) > Date.now()
   }
 
   // tools 服务也可能比插件晚就绪：跟面板一样重试，别一次性 return 掉
@@ -843,18 +992,22 @@ export function apply(ctx, config) {
       }
       return
     }
-    try {
-      tools.register({
-        name: 'qq_longing',
+    // 工具名不再写死 qq_longing：这个插件跟通道无关，没装 QQ 的人看到一个 qq_ 前缀的工具
+    // 只会以为自己装错了；描述里写死作者的角色名，更不该出现在别人的模型面前。
+    // 旧名 qq_longing 在勾了 qq 通道时继续注册成别名，dsh-qq 的提示词不用改。
+    const toolName = String(settings()?.toolName || 'longing').replace(/[^a-zA-Z0-9_]/g, '').slice(0, 40) || 'longing'
+    const chs = Array.isArray(settings()?.channels) ? settings().channels.map(String) : ['qq']
+    const who = String(settings()?.personaName ?? '').trim() || '她'
+    const toolDef = {
         description:
-          '读写角色的欲望状态：lust 性欲 / lewd 色情 / possess 占有 / shame 羞耻 / resist 理智 / fatigue 疲劳 / affection 好感（0-100）。' +
+          `读写${who}的欲望状态：lust 性欲 / lewd 色情 / possess 占有 / shame 羞耻 / resist 理智 / fatigue 疲劳 / affection 好感（0-100）。` +
           'action=get 查看。' +
           'action=events 列出所有「事件」（夸奖/被拒/提别人/说狠话…），action=event 配 name 把刚才发生的事记进数值：' +
           '他说了什么、做了什么，就用对应事件登记一次，数值和她的语气会跟着变。' +
           'action=diary 读她最近几天的「心情日记」（高兴的、难受的、心里想的），action=thought 配 text 记一句她的心里话。' +
           '日记她不会主动说出来，只有主人问才给——主人问「你今天在想什么」「看看日记」时就调这个。' +
           'action=set/bump/preset 直接改值，只在调试模式打开时可用；平时数值靠聊天里发生的事慢慢养。' +
-          '改值需要主人在私聊里先解锁管理员模式。',
+          '改值需要主人在私聊里先解锁管理员模式（由通道插件登记主人会话）。',
         parameters: {
           type: 'object',
           properties: {
@@ -948,9 +1101,16 @@ export function apply(ctx, config) {
               (isPaused() ? '｜已暂停' : ''),
           }
         },
-      })
-    } catch (e) {
-      logger.warn?.(`[dsh-longing] qq_longing 注册失败：${e?.message ?? e}`)
+    }
+    const toolNames = [toolName]
+    // 旧名做别名：dsh-qq 的提示词里写的是 qq_longing，升级不该把老配置打断。
+    if (chs.includes('qq') && toolName !== 'qq_longing') toolNames.push('qq_longing')
+    for (const n of toolNames) {
+      try {
+        tools.register({ name: n, ...toolDef })
+      } catch (e) {
+        logger.warn?.(`[dsh-longing] 工具 ${n} 注册失败：${e?.message ?? e}`)
+      }
     }
   }
   tryRegisterTools()
@@ -958,6 +1118,49 @@ export function apply(ctx, config) {
   // 暴露给通道插件：一次读全，省得各自拼字符串
   globalThis.__dshLongingState = () => statePayload()
   globalThis.__dshLongingRefresh = () => refreshBlock()
+  /**
+   * 主人会话登记口。
+   *
+   * 通道插件收到「主人私聊」时调一次：`__dshLongingOwnerSession(sessionId, ttlMs)`。
+   * 进程内、不落盘，也**不随插件热重载清空**（登记方还活着；清掉它主人就改不动值了）。
+   */
+  if (!(globalThis.__dshLongingOwnerSessions instanceof Map)) globalThis.__dshLongingOwnerSessions = new Map()
+  globalThis.__dshLongingOwnerSession = (sessionId, ttlMs = 3_600_000) => {
+    const sid = String(sessionId ?? '').trim()
+    if (!sid) return false
+    const ttl = Math.max(60_000, Math.min(7 * 86_400_000, num(ttlMs, 3_600_000)))
+    globalThis.__dshLongingOwnerSessions.set(sid, Date.now() + ttl)
+    // 记下「有人真的在用这张表」：没有它的话，空表无法和「没有通道」区分开，
+    // ownerOnly 就会把所有人的写操作全拒掉。
+    globalThis.__dshLongingOwnerRegistered = true
+    return true
+  }
+  /**
+   * 主动开口的问与答：通道插件发消息之前问一句「现在能主动吗」，
+   * 说出口之后回报一笔。判定全在 proactive.js，通道那边不许再自己算。
+   */
+  globalThis.__dshLongingProactive = () => proactiveGate({ cfg: settings(), state })
+  /**
+   * 安全词：通道插件认消息时用这个，不然面板里改「安全词」谁都不认。
+   * 以前这个键在 longing 里没有读取点、dsh-qq 那边是硬编码正则。
+   */
+  globalThis.__dshLongingPauseWord = () => String(settings()?.pauseWord ?? '停').trim()
+  /** 主动发图：判据 + 记一笔（通道插件真的把图发出去之后调） */
+  globalThis.__dshLongingImageGate = () => imageGate({ cfg: settings(), state })
+  globalThis.__dshLongingMarkImage = (info = null) => {
+    state = normalizeState({ ...state, ...noteImage({ state, now: Date.now(), info }) })
+    state.updatedAt = Date.now()
+    writeJson(stateFile, snapState(), logger)
+    refreshBlock()
+    return imageGate({ cfg: settings(), state })
+  }
+  globalThis.__dshLongingMarkInitiate = (info = null) => {
+    state = normalizeState({ ...state, ...noteInitiate({ state, now: Date.now(), info }) })
+    state.updatedAt = Date.now()
+    writeJson(stateFile, snapState(), logger)
+    refreshBlock()
+    return proactiveGate({ cfg: settings(), state })
+  }
   /** 心情日记：只读。通道插件想让她「提一句昨天」可以拿，但别主动刷屏。 */
   globalThis.__dshLongingDiary = (days = 3) => recentDiary(diary, days)
   globalThis.__dshLongingDiaryText = (days = 1) => recentDiary(diary, days).map(formatDay).join('\n\n')

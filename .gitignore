@@ -1,5 +1,17 @@
-﻿node_modules/
+node_modules/
 .DS_Store
 *.log
-
 *.bak
+
+# 作者自用的通道插件镜像（含个人设定）：不进仓库，本地文件照常保留
+patches/
+
+# 运行期状态：statePath 指到仓库里时也不能进版本库
+workspace/
+欲望状态.json
+欲望历史.json
+欲望面板配置.json
+心情日记.json
+活动时间.json
+面板令牌.txt
+欲望注入*.txt

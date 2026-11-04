@@ -50,26 +50,84 @@
 | 注入块 | 每分钟生成 `欲望注入.txt` + 每通道一份，同时挂在 `globalThis.__dshDesireBlocks` |
 | 网页面板 | 状态、软上限红线、解锁进度、事件按钮、日记、曲线、全部参数 |
 | 令牌保护 | 数据接口要 `x-desire-token`；令牌放 `sessionStorage`，只绑回环地址 |
-| 工具 | `qq_longing`：`get / set / bump / preset / pause / event / events / diary / thought`，改值只在主人私聊 |
+| 工具 | `longing`：`get / set / bump / preset / pause / event / events / diary / thought`，改值只在主人私聊（勾了 `qq` 通道时旧名 `qq_longing` 同时注册，v1.12 之前一直叫这个） |
 | 生图后端（可选） | 探测 ComfyUI 是否在线，用状态影响画什么；未知态不会乱发指令 |
 
-## 三、怎么用
+## 三、安装
 
-### 1. 装
+### 3.0 装之前确认
 
-```bash
-cd <你的 DSH profile 目录>/node_modules
-git clone https://github.com/mearihaka/dsh-longing.git
+| 需要 | 说明 |
+|---|---|
+| DSH 0.2+ | 桌面版或命令行版都行 |
+| Node 20+ | DSH 自带的就够（用到 `fetch`、`AbortSignal`、`Object.hasOwn`） |
+| 一个 profile | 通常是 `~/.dsh/profiles/<名字>`，桌面版默认叫 `desktop` |
+| 可选：通道插件 | 例如 `dsh-qq-onebot`。**不装也能用**面板和工具，只是它不会自己发消息 |
+| 可选：ComfyUI | 只有「主动发图」需要，不装不影响别的 |
+
+### 3.1 把代码放到 profile 能看见的地方
+
+**推荐 symlink / junction**：复制出来的副本会跟本体分叉，改一处另一处不生效。
+
+```powershell
+# Windows（管理员或开启开发者模式）
+git clone https://github.com/mearihaka/dsh-longing.git <代码目录>\dsh-longing
+New-Item -ItemType Junction `
+  -Path '<profile目录>\node_modules\dsh-longing' `
+  -Target '<代码目录>\dsh-longing'
 ```
 
-DSH 启动时会读它的 `cordis.patch.yml`（`dsh.bundle` 挂载），不需要改别的东西。
+```bash
+# Linux / macOS
+git clone https://github.com/mearihaka/dsh-longing.git <代码目录>/dsh-longing
+ln -s <代码目录>/dsh-longing <profile目录>/node_modules/dsh-longing
+```
 
-**建议显式配一个状态目录**（不配就落到进程工作目录的 `workspace/`）：
+### 3.2 挂进 profile 的 `bundles`（**漏了这步，插件等于没装**）
+
+编辑 `<profile目录>/package.json`，把包名加进 `bundles`：
+
+```json
+{
+  "dsh": {
+    "profile": {
+      "bundles": ["…原来就有的…", "dsh-longing"]
+    }
+  }
+}
+```
+
+为什么必须：DSH 启动时会逐个读 bundle 自带的 `cordis.patch.yml`，里面那条 `- insert:` 才是
+「把插件插进配置树」。漏了这一步，插件一次都不会启动，而日志里只有一行
+`patch: entry "dsh-longing" not found` —— 这是本插件最容易踩的坑。
+
+### 3.3 重启，确认它真的起来了
+
+重启 DSH（桌面版直接关掉重开）。启动日志里出现下面这行就算成功：
+
+```
+[dsh-longing] 状态目录：<状态目录>
+```
+
+没有这一行 → 回到 3.2 检查 `bundles`。
+
+**状态目录**（插件所有文件都落在这里）按下面的顺序决定：
+
+```
+statePath（显式配）> DSH_LONGING_DIR 环境变量 > DSH 给的插件家目录
+                                                （$DSH_HOME / ~/.dsh 下的 dsh-longing）
+```
+
+1.11 及以前默认是「进程工作目录 / workspace」，换个目录启动就是另一份状态。1.12 首次启动会把
+老的 `<cwd>/workspace` 里的状态搬一次过来（新目录已有文件则不覆盖）。
+
+建议显式配一个（profile 的 `cordis.patch.yml`）：
 
 ```yaml
 - id: dsh-longing
+  name: dsh-longing
   config:
-    statePath: D:/somewhere/workspace/欲望状态.json
+    statePath: <绝对路径>/欲望状态.json
 ```
 
 从旧版本迁移（只搬一次，没配 `statePath` 时生效）：
@@ -77,73 +135,355 @@ DSH 启动时会读它的 `cordis.patch.yml`（`dsh.bundle` 挂载），不需�
 ```yaml
 - id: dsh-longing
   config:
-    migrateFrom: D:/old/workspace
+    migrateFrom: <旧的状态目录>
 ```
 
-### 2. 开面板
+| 文件 | 用途 |
+|---|---|
+| `欲望状态.json` | 七维数值、事件、余怨、主动与发图账本 |
+| `欲望注入.txt` | 每分钟刷新的注入块（给「不认识自己名字」的老式通道插件读） |
+| `欲望注入.<通道>.txt` | 分通道的注入块：`qq` / `bili` / `web` … |
+| `欲望面板配置.json` | 面板改过的键（`__panelKeys` 记着哪些是面板改的） |
+| `欲望历史.json` | 24 小时曲线 |
+| `心情日记.json` | 高兴的 / 难受的 / 心里想的 |
+| `面板令牌.txt` | 面板鉴权令牌 |
+| `活动时间.json` | 通道插件回报的「主人最后一次活动」 |
 
-重启后打开：
+> 这些文件全是明文，含亲密偏好。**放本机，别同步网盘、别提交仓库**（`.gitignore` 已排除运行期文件）。
+
+### 3.4 打开面板
 
 ```
 http://127.0.0.1:<DSH端口>/dsh-longing
 ```
 
-首次打开要粘令牌，令牌在状态目录的 `面板令牌.txt`。粘一次就存在浏览器里。
+首次打开要粘一次令牌（内容在 `<状态目录>/面板令牌.txt`），存在 `sessionStorage` 里，关掉标签页就没了。
+也可以直接带参数进：`…/dsh-longing?token=<令牌>`。
 
-### 3. 让通道插件读它
+### 3.5 装完自检（四条，都能过就算装好了）
 
-两种接法，任选：
+```bash
+# 1) 注入文件在 10 分钟内刷新过（Windows）
+(Get-Item <状态目录>\欲望注入.txt).LastWriteTime
 
-**A. 读文件**（最省事）
+# 2) 内容是「真换行」，不是字面 \n
+node tools/preview.mjs [状态目录] qq unknown
 
-```js
-const block = readFileSync(join(workspace, '欲望注入.txt'), 'utf8').trim()
-if (block) systemPrompt += '\n' + block
+# 3) 体检（含面板可达性，需要令牌文件）
+node tools/doctor.mjs --panel http://127.0.0.1:<端口>/dsh-longing
+
+# 4) 自己的测试套件
+node --test --test-concurrency=1
 ```
 
-主文件 `欲望注入.txt` 是给「不知道自己叫什么名字」的老式通道插件读的，而它们历来都是 QQ —— 所以**只有「通道绑定」里勾了 qq，主文件才给欲望块**，否则只给中性块。想按通道各读各的，读带后缀的那份：
+面板能打开、滑块有值、「主动行为」卡底部那行不是「判据加载中…」→ 全部就绪。
 
-```js
-const mine = readFileSync(join(workspace, `欲望注入.qq.txt`), 'utf8').trim()  // qq / bili / web
+## 四、配置
+
+### 4.1 三层，优先级从高到低
+
+| 层 | 在哪 | 说明 |
+|---|---|---|
+| 面板 | 状态目录的 `欲望面板配置.json` | 只保存「你在面板上真改过」的键，`__panelKeys` 记着是哪几个 |
+| DSH 插件配置 | profile 的 `cordis.patch.yml` → `- id: dsh-longing` 的 `config:` | 推荐在这里配；改了要重启 |
+| 代码默认值 | `src/config.js` 的 schema | 兜底 |
+
+面板改动**不会**被「设置页改了」覆盖，反过来也一样 —— 想回到设置页的值，点面板「恢复默认」。
+
+### 4.2 常见改法
+
+```yaml
+- id: dsh-longing
+  name: dsh-longing
+  config:
+    statePath: /path/to/workspace/欲望状态.json   # 状态放哪
+    channels: [qq]                                # 只对 QQ 注入
+    personaName: 小满                              # 面板标题和工具说明用这个名字
+    autoInitiate: true                            # 允许她主动开口（默认关）
+    idleTriggerMin: 30                            # 冷场 30 分钟才考虑
+    proactiveMaxPerDay: 6
+    quietHours: 02:00-09:00                       # 她几点该安静
+    activeHours: 09:00-02:00                      # 几点的对话带欲望
+    debugMode: true                               # 想直接拖滑块改数值时
 ```
 
-**B. 读全局变量**（同进程，零 IO）
+### 4.3 配置项总表（schema 84 项；`GET /api/config` 返回 76 项）
 
-```js
-if (globalThis.__dshDesireBlock) systemPrompt += '\n' + globalThis.__dshDesireBlock
-// 分通道的版本是 __dshDesireBlocks.qq / .bili / .web
-```
+下面 84 项是 `src/config.js` 里声明的全部配置。其中 8 项（`lust / lewd / possess / shame / resist /
+fatigue / affection / scene`）是**初始数值**，属状态、面板和 API 都不返回（见 4.4），所以
+`GET /api/config` 实际回 76 项。
 
-想让「每句话」推高数值，通道插件在收到主人消息时调一次：
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `enabled` | true | 总开关 |
+| `channels` | ["qq"] | 哪些通道生效：qq / bili / web；没列出的通道完全不注入 |
+| `personaName` | "" | 她的名字：面板标题和工具说明里会用（留空 = 只写「她」，不写名字） |
+| `toolName` | "longing" | 注册给模型的工具名；勾了 qq 通道时会额外注册旧名 `qq_longing` 做兼容 |
+| `lust` | 30 | 性欲（初始值） |
+| `lewd` | 35 | 色情值（初始值） |
+| `possess` | 55 | 占有值（初始值） |
+| `shame` | 45 | 羞耻度（初始值）：越高越欲拒还迎 |
+| `resist` | 50 | 理智/抗拒（初始值）：越高越克制 |
+| `fatigue` | 20 | 疲劳度（初始值）：高时欲望转成想被抱 |
+| `affection` | 30 | 好感度（初始值）：开局是客气的，要慢慢养 |
+| `scene` | "" | 当前场景（初始值），影响她能多放肆 |
+| `stealthInjection` | true | 用第一人称心理活动注入，而不是干瘪数值 |
+| `peakWindow` | "22:00-02:00" | 睡前高峰时段 |
+| `peakBonus` | 25 | 高峰加成 |
+| `decayPerHour` | 3 | 每小时衰减 |
+| `nightDecayPerHour` | 6 | 睡眠时段衰减 |
+| `activeHours` | "08:00-02:00" | 只在此时段内注入 |
+| `autoInitiate` | false | 允许她主动开口；主动发图也归这一项管 |
+| `idleTriggerMin` | 15 | 冷场多少分钟后可以考虑开口 |
+| `proactiveMaxPerDay` | 8 | 每天最多主动几次 |
+| `proactivePerHour` | 10 | 每小时最多主动几次（0 = 不限） |
+| `proactiveCooldownMin` | 0 | 两次主动之间至少隔多少分钟；0 = 跟下面 `cooldownMin` 走 |
+| `quietHours` | "23:30-08:00" | 安静时段（不主动） |
+| `urgeThink` / `urgeHint` / `urgeSpeak` / `urgeAct` | 40 / 55 / 70 / 85 | 四档阈值：心里想 / 暗示 / 开口说 / 直接上手 |
+| `urgeRepeatMin` | 30 | 发情档位时多久可以再主动一次 |
+| `lewdDirect` | 55 | 色情值到多少开始说直白的话 |
+| `possessJealous` | 60 | 占有值到多少开始吃醋 |
+| `fatigueTired` | 60 | 疲劳到多少开始撑不住 |
+| `shameHiding` | 60 | 羞耻到多少开始口是心非 |
+| `resistHolding` | 60 | 理智到多少开始半推半就 |
+| `interactionLust` | 0.1 | 主人每说一句涨多少性欲 |
+| `affectionGain` | 0.3 | 每次主人聊天加多少好感 |
+| `affectionDecay` | 0.3 | 每小时自然回落多少好感 |
+| `affectionClose` / `affectionDevoted` | 60 / 80 | 开始黏人 / 离不开 |
+| `cooldownMin` | 30 | 两次主动之间至少隔多少分钟 |
+| `resistWeight` | 0.5 | 理智对欲望的抵消权重 |
+| `affectionWeight` | 0.4 | 好感对有效欲望的调制（意愿） |
+| `negBreakpoints` | "45,40,35,25,10,5" | 负面阶梯六个降序断点 |
+| `couplingEnabled` | true | 七个值互相牵制 |
+| `couplingRate` | 1 | 耦合与自然演化的总倍率 |
+| `eventGain` | 1 | 事件对数值的冲击倍率 |
+| `debugMode` | false | 开了才能在面板直接改数值、套预设、用工具 set/bump |
+| `feedbackThink/Hint/Speak/Act` | true | 四档正反馈各自的显示开关 |
+| `lonelyHours` | 6 | 多久没消息算「被晾着」（只算清醒时段） |
+| `sleepWindow` | "23:30-08:00" | 睡眠时段：不算冷落、不扣好感 |
+| `diaryDays` | 7 | 面板默认显示几天日记 |
+| `unlocksEnabled` | true | 按好感/羞耻/色情逐步解锁亲密程度 |
+| `coldLust` / `shyLewd` / `distantPossess` / `numbAffection` | 25 / 30 / 30 / 30 | 各维「冷」的地板 |
+| `initiateThreshold` | 45 | 低于这个性欲值她不会主动开口 |
+| `explicitThreshold` | 55 | 露骨门槛 |
+| `imageThreshold` | 110 | 主动发图门槛（性欲 + 色情，0~200） |
+| `imagesPerDay` | 2 | 每天主动发图上限；0 = 不发 |
+| `nsfwImages` | false | 允许成人向图片（默认关） |
+| `curveEnabled` | true | 面板显示 24 小时曲线 |
+| `presetsEnabled` | true | 面板显示一键预设 |
+| `voiceEnabled` | false | 发情时用语音条（通道侧要有 TTS） |
+| `memoryEnabled` | true | 事后写一条 global 记忆 |
+| `scheduleEnabled` | true | 按 `activeHours` 限制时段 |
+| `pauseEnabled` | true | 允许红色暂停 |
+| `jealousy` | 50 | 吃醋敏感度 |
+| `rejectionPenalty` | 15 | 被拒惩罚（15 = 比例 1） |
+| `rememberAfterward` | true | 已弃用，功能和 `memoryEnabled` 重复 |
+| `ownerOnly` | true | 只对主人生效（需要通道登记主人会话，见 5.3） |
+| `pauseWord` | "停" | 安全词：说出后立刻降回平静 |
+| `personaNote` | "" | 额外人设补丁，会跟欲望状态一起注入 |
+| `comfyEnabled` | true | 启用生图后端探测 |
+| `comfyBaseUrl` | "http://127.0.0.1:8188" | ComfyUI 地址（只允许本机回环） |
+| `comfyAutoLaunch` | false | 检测不到时自动拉起 ComfyUI |
+| `comfyLaunchScript` | "" | 启动脚本路径（`.ps1/.bat/.cmd/.exe`） |
+| `comfyLaunchAllowDir` | "" | 只允许执行这个目录下的脚本（留空 = 不限制，建议填） |
+| `comfyProbeSec` | 60 | 探测间隔（秒） |
+| `migrateFrom` | "" | 旧版状态目录，首次启动搬一次 |
+| `statePath` | "" | 状态文件路径；留空 = 3.3 里那套回落顺序 |
 
-```js
-globalThis.__dshLongingNote?.('owner')
-```
+### 4.4 哪些键不能当配置改
 
-### 4. 面板上怎么操作
+`lust / lewd / possess / shame / resist / fatigue / affection / scene` 是**状态**，不是配置：
+它们只活在 `欲望状态.json` 里，正常靠聊天事件养。想直接改，打开 `debugMode` 用面板滑块或工具。
+
+## 五、使用
+
+### 5.1 面板
 
 | 做什么 | 怎么做 |
 |---|---|
-| 临时改状态 | 拖滑块 → 点「保存」。**没保存前 8 秒轮询不会覆盖你的拖动**，状态栏会提示「改动还没保存」 |
+| 临时改状态 | 拖滑块 → 点「保存」。没保存前 8 秒轮询不会覆盖你的拖动 |
 | 套预设 | 平静 / 黏人 / 发情 / 病娇，一键 |
 | 让她安静两小时 | 点「暂停」。暂停期间数值冻结，注入改成「正常聊天，不要撩」 |
-| 恢复运行 | 暂停后按钮栏会多出「恢复运行」，点一下立刻解冻（不用等两小时） |
-| 调语气档位 | 卡片「主动行为」里的四档阈值、冷场时间、每日上限 |
-| 调负面敏感度 | **故意不在面板上**，见下面「为什么负面阈值不给你看」 |
-| 改配置 | 齿轮卡片里的数值；保存后写进 `欲望面板配置.json`，优先级高于 DSH 设置 |
+| 恢复运行 | 暂停后按钮栏会多出「恢复运行」，点一下立刻解冻 |
+| 调主动频率 | 「主动行为」卡：冷场分钟、每天/每小时上限、安静时段、性欲地板 |
+| 看此刻能不能主动 | 同一张卡底部那行：能/不能、为什么、最早什么时候能 |
+| 调语气档位 | 四档阈值（在心里想 / 暗示 / 开口要 / 直接上手） |
+| 调负面敏感度 | **故意不在面板上**，见「为什么负面阈值不给你看」 |
+| 记一件事 | 「刚刚发生了什么」卡：好话、坏话、她说停、事后，点一下记一次 |
+| 看日记 | 只有你主动打开才看得到，她不会自己念 |
 
-**优先级**：面板 `欲望面板配置.json` > DSH 插件配置 > 代码默认值。
+**只有行为参数会被保存**：点「保存设置」绝不会把当时的状态快照写进配置 —— 否则重启就会把数值
+倒回上一次保存设置那一刻。
 
-**只有行为参数会被保存**：`lust`/`lewd`/`affection`/`scene` 这些是状态，只活在 `欲望状态.json` 里。点「保存设置」绝不会把当时的状态快照写进配置——否则重启就会把数值倒回上一次保存设置那一刻。
+### 5.2 工具（给模型用的）
 
-### 5. 可能需要什么
+工具名默认 `longing`（勾了 `qq` 通道时旧名 `qq_longing` 同时注册）：
 
-- **必须**：Node 20+、DSH 0.2+、`@deepseek-ai/cordis`、`@deepseek-ai/schemastery`（DSH 自带）；
-- **要它真的说话**：一个通道插件，例如 `dsh-qq-onebot`（见第六节）；
-- **要它出图**：ComfyUI + 你的工作流（可选，不装也能用）；
-- **不需要**：外部数据库、Python、云服务。全部本地 JSON。
+```
+longing(action="get")                    # 读七维 + 档位（非主人只给一个档位词）
+longing(action="event", name="praise")   # 把刚才发生的事记进数值
+longing(action="events")                 # 列出所有事件名
+longing(action="diary", minutes=3)       # 读最近几天的日记
+longing(action="thought", text="…")      # 记一句她的心里话
+longing(action="set"/"bump"/"preset")    # 直接改值，只在 debugMode 打开时可用
+longing(action="pause", minutes=120)     # 暂停
+```
 
-## 四、数值怎么影响说话
+`ownerOnly` 为 true 时，只有被通道插件登记过的主人会话能改值（见 5.3）。
+
+### 5.3 让通道插件接上它（写通道插件的人看）
+
+**A. 读注入块 —— 三选一**
+
+```js
+// 1) 分通道文件（推荐）
+const mine = readFileSync(join(stateDir, '欲望注入.qq.txt'), 'utf8').trim()
+
+// 2) 主文件：只有 channels 里勾了 qq 才给欲望块，否则是中性块
+const main = readFileSync(join(stateDir, '欲望注入.txt'), 'utf8').trim()
+
+// 3) 同进程零 IO
+if (globalThis.__dshDesireBlock) systemPrompt += '\n' + globalThis.__dshDesireBlock
+// 分通道版本：globalThis.__dshDesireBlocks.qq / .bili / .web
+```
+
+**B. 每句话推高数值**
+
+```js
+globalThis.__dshLongingNote?.()          // 默认就当「主人说话了」
+```
+
+**C. 登记主人会话（`ownerOnly` 的判据）**
+
+```js
+globalThis.__dshLongingOwnerSession?.(sessionId, 3600_000)   // ttl 默认 1 小时，最多 7 天
+```
+
+不登记也能跑，但那就是「没有通道在管主人」的状态 —— 插件会放行并打一条日志，
+`ownerOnly` 等于没生效。dsh-qq 用它自己那张 `__dshQqOwnerSessions`，本插件继续认，两套共存。
+
+**D. 主动开口：先问再发，发完回报**
+
+```js
+const gate = globalThis.__dshLongingProactive?.()
+if (gate && gate.allowed === false) {
+  // 别投这一轮；gate.nextAt 是「最早什么时候值得再问」
+  return
+}
+// …真的发出去了之后
+globalThis.__dshLongingMarkInitiate?.({ channel: 'qq' })
+```
+
+**E. 主动发图**
+
+```js
+const img = globalThis.__dshLongingImageGate?.()   // { allowed, kind, kindLabel, score, threshold }
+// 出图 + 发出去之后
+globalThis.__dshLongingMarkImage?.({ channel: 'qq' })
+```
+
+**F. 安全词**
+
+```js
+const stop = globalThis.__dshLongingPauseWord?.()  // 面板里配的那个词，默认「停」
+```
+
+拿不到任何钩子（没装本插件 / 热重载空窗）时请自行降级，别把主动说话整条功能弄没。
+
+### 5.4 手动喂一次（不写代码）
+
+面板「刚刚发生了什么」卡就是全部事件的入口；`longing(action="event")` 是给模型用的同一个表。
+同一件事一小时内重复递减（1 → 0.5 → 0.33），单次封顶 ±6。
+
+## 六、卸载
+
+```powershell
+# 1) 从 profile 的 package.json 里去掉 "dsh-longing"
+# 2) 删掉链接（不是删本体）
+Remove-Item '<profile目录>\node_modules\dsh-longing'
+# 3) 状态目录想留就留（放着不影响 DSH）
+```
+
+```bash
+# Linux / macOS
+rm <profile目录>/node_modules/dsh-longing
+```
+
+- 只删链接、不删代码目录：以后还想用，把链接建回来就行；
+- 状态目录（`欲望状态.json` 等）删了就是真删，**先备份**；
+- 有通道插件（如 dsh-qq）读过 `欲望注入.txt` 的，卸载后它读不到文件 → 走自己的旧逻辑，不会崩；
+- 卸载后重启 DSH 生效。
+
+## 七、常见问题
+
+**Q1 面板打不开 / 一直 401**
+端口对不对（看 DSH 启动日志）；令牌是不是 `面板令牌.txt` 里那串；面板只允许同源请求。
+
+**Q2 面板能开，但「判据加载中…」不动**
+插件没起来或版本太旧。看日志有没有 `[dsh-longing] 状态目录：…`；没有就回去查 3.2 的 `bundles`。
+
+**Q3 `欲望注入.txt` 不更新了**
+插件进程没跑（tick 每分钟一次）。看日志；通道插件只认 10 分钟内的文件，超时它会跳过。
+
+**Q4 开了 `autoInitiate` 她还是不主动**
+按判据逐条对：`ownerOnly` 有没有把通道登记上（5.3 C）、冷场够不够 `idleTriggerMin`、
+性欲有没有到 `initiateThreshold`（时间地板 30、高峰 +25，默认 45）、是不是在 `quietHours`、
+当天/当小时额度用完没。面板「主动行为」底部那行直接给原因和 `nextAt`。
+
+**Q5 她不主动发图**
+`autoInitiate` 要开、`imagesPerDay` > 0、`性欲+色情` ≥ `imageThreshold`、而且必须聊过
+（`everContacted`）。成人向还要 `nsfwImages: true`。
+
+**Q6 在 DSH 设置页改了配置，像没反应**
+1.12 起面板改动和设置页改动分开了（`__panelKeys`）。如果这个键以前在面板上存过，面板优先 ——
+点面板「恢复默认」清掉它，就回到设置页的值。
+
+**Q7 工具叫什么？为什么提示词里是 `qq_longing`**
+1.12 起主名是 `longing`；勾了 `qq` 通道时旧名继续注册，老提示词不用改。
+
+**Q8 换机器 / 搬家**
+拷整个状态目录过去，在新机器上配 `statePath` 指过去；或者用 `migrateFrom` 让它在首次启动时搬。
+
+**Q9 上下文被压缩（第 N 次）连发，一条回复都发不出来**
+不是本插件的问题：`compaction-basic` 用了绝对值 `retainTokens` 会和阈值打架，改成比例制
+（`thresholdRatio` + `retainRatio`）。
+
+**Q10 ComfyUI 点「现在拉起」没反应**
+`comfyLaunchScript` 路径要存在、扩展名是 `.ps1/.bat/.cmd/.exe`；填了 `comfyLaunchAllowDir`
+就必须在它下面；10 分钟内只拉起一次。
+
+**Q11 会让模型说更露骨的话吗**
+它只维护状态、渲染提示词。真正露骨与否取决于你用的模型和通道有没有过滤 ——
+默认 `nsfwImages: false`、`explicitThreshold: 55`，都在你自己手上。
+
+## 八、依赖与环境要求
+
+**运行必需**
+
+| 依赖 | 版本 | 谁提供 |
+|---|---|---|
+| Node.js | ≥ 20 | DSH 自带（用到 `fetch` / `AbortSignal` / `Object.hasOwn` / `node:test`） |
+| DSH | ≥ 0.2.0 | 宿主 |
+| `@deepseek-ai/schemastery` | ≥ 3.18.1 | DSH 自带（`peerDependencies`，不需要你装） |
+| `@deepseek-ai/cordis` | ≥ 4.0.1 | DSH 自带（同上） |
+
+**可选**
+
+- 一个通道插件（例如 `dsh-qq-onebot`）—— 要它真的发消息；
+- ComfyUI（本机回环地址）—— 要「主动发图」；
+- TTS —— 只有通道插件实现了语音条才用得上。
+
+**明确不需要**
+
+外部数据库、Python、云服务、任何 API key。所有数据都是本地 JSON，面板是一条本地 HTTP 路由，
+插件不联网（除了探测 `comfyBaseUrl` 那个本机地址）。
+
+**平台**
+
+Windows 上验证过；路径全部走 `node:path` / `fileURLToPath`，Linux / macOS 理论上可用。
+拉起 ComfyUI 那段用 `powershell.exe`，在非 Windows 上会静默失败（不影响别的功能）。
+
+## 九、数值怎么影响说话
 
 ### 七个值
 
@@ -359,6 +699,57 @@ globalThis.__dshLongingDiaryText(1)    // 今天的文字版
 
 `sleepWindow` 和 `quietHours` 都默认 `23:30-08:00`，但管的事不一样：`quietHours` 是「这段时间不主动找你」，`sleepWindow` 是「这段时间的沉默不算冷落」。
 
+### 主动开口的判据归这里（v1.11.0）
+
+v1.10.0 及以前，面板「主动行为」那一栏的**频率类键**（`autoInitiate` / `idleTriggerMin` /
+`proactiveMaxPerDay` / `quietHours` / `cooldownMin` / `urgeRepeatMin` / `proactivePerHour` /
+`proactiveCooldownMin`）只写在配置 schema 和面板可写清单里，**代码里没有任何读取点**——
+面板改了不生效，真正限速的是每个通道插件自己写的定时器。dsh-qq 那边一个
+`proactiveSilentMs: 120000` 就能把它刷成 3 分钟一次，一小时烧掉一百多万 token。
+
+现在判据统一在 `src/proactive.js`，一句话分工：
+
+```
+longing  = 她现在想不想、能不能、多久一次     （主观世界）
+通道插件 = 真的发出去、真的花钱               （执行层，只问一句门开没开）
+```
+
+怎么用（通道插件侧）：
+
+```js
+// 发之前问一句
+const gate = globalThis.__dshLongingProactive?.()
+if (gate && gate.allowed === false) return          // gate.reason 说明原因，gate.nextAt 是最早可再试的时间
+// 真发出去之后回报一笔（[SILENT] 不算，别占额度）
+globalThis.__dshLongingMarkInitiate?.({ channel: 'qq' })
+```
+
+HTTP 也有：`GET /dsh-longing/api/proactive`（带 `x-desire-token`），返回同一份判据：
+
+| 字段 | 含义 |
+|---|---|
+| `allowed` | 现在能不能主动 |
+| `reason` | 不能的原因：`off` / `paused` / `never` / `quiet` / `inactive` / `cold` / `lowlust` / `cooldown` / `hourly` / `daily` |
+| `nextAt` | 最早什么时候值得再问（毫秒时间戳），通道插件可以直接睡到那时候 |
+| `usedToday` / `limitToday` | 今天已经开口几次 / 上限 |
+| `usedLastHour` / `limitPerHour` | 这一小时 / 上限 |
+| `coldMin` / `idleTriggerMin` | 冷场多少分钟 / 门槛 |
+| `tier` | 当前档位（0 没有 / 1 心里想 / 2 暗示 / 3 开口 / 4 上手） |
+
+判定顺序（先到先否）：`autoInitiate` 关 → 暂停 → 没聊过 → 安静时段 → 活跃时段 →
+冷场不够 → 性欲低于 `initiateThreshold` → 两次太近（发情档位用 `urgeRepeatMin`，
+平时用 `cooldownMin`/`proactiveCooldownMin`）→ 这小时次数满 → 今天次数满。
+
+冷场只从**你最后一次说话**算起；两次主动之间的间隔由 `cooldownMin` 单独管。
+这样「你一直不回」和「她刚说完」是两件事，不会互相顶掉。
+
+「今天开口几次」记在状态文件的 `proactiveLog`（最近 64 次时间戳），跨天自动归零。
+面板那张卡底部会直接显示**此刻能不能主动、为什么不能、下次最早多久**——
+不再是「改完像没反应」。
+
+> 通道插件没装 / 还没就绪时，`__dshLongingProactive` 是 `undefined`，
+> 通道应当退回自己的规则，不能因为依赖方缺位把主动说话整条功能弄没。
+
 ### 渐进解锁：她肯到什么程度（v1.4.0）
 
 数值到了不等于什么都能做。**关系到了一定程度，才轮得到那件事**：
@@ -429,7 +820,7 @@ globalThis.__dshLongingDiaryText(1)    // 今天的文字版
 
 **`interactionLust` 默认改成 0.1**：说十句话才推高 1 点。以前是 1，聊几句就把性欲顶到 100，`lewd` 跟着涨，两个值就分不开了。
 
-## 五、为什么这样设计
+## 十、为什么这样设计
 
 ### 1. 为什么模型会「配合」数字
 
@@ -520,9 +911,10 @@ decayPerHour 3 × (60s / 3600000) = 0.05  →  round(91.95) = 92
 
 现在状态键和行为参数彻底分家：`/api/config` 的白名单里没有状态键，启动时合并方向是 `{...base, ...state}`（状态优先），旧的脏快照会被自动清掉。
 
-## 六、和 dsh-qq 一起用
+## 十一、和 dsh-qq 一起用
 
-作者自用的是 `dsh-qq-onebot` 的本地改版。要点：
+作者自用的是 `dsh-qq-onebot` 的本地改版（那份改版**不在这个仓库里** —— 里面有作者个人的
+设定文本，已 `gitignore`，这里只写怎么接）。要点：
 
 - 它自己也会拼一段欲望提示（`inbound.js` 里的 `desireBlock`）。**两份会打架**；
 - 改法：让它优先读 `欲望注入.txt`，读不到再退回它自己的逻辑；
@@ -531,7 +923,7 @@ decayPerHour 3 × (60s / 3600000) = 0.05  →  round(91.95) = 92
 
 不想改代码的折中：把 dsh-qq 自己的欲望注入关掉，只让本插件生成 `欲望注入.txt`，再在 `inbound` 里加三行读文件。
 
-## 七、注意事项
+## 十二、注意事项
 
 ### 1. 过激的成人内容要你自己处理
 
@@ -562,7 +954,7 @@ decayPerHour 3 × (60s / 3600000) = 0.05  →  round(91.95) = 92
 
 路径用 `fileURLToPath` + `join`，理论上跨平台可用，但没验证过。
 
-## 八、免责声明
+## 十三、免责声明
 
 使用本插件即表示你同意以下全部内容：
 
@@ -574,35 +966,132 @@ decayPerHour 3 × (60s / 3600000) = 0.05  →  round(91.95) = 92
 6. **隐私自保**。状态文件包含你的亲密偏好，作者不收集、不上传任何数据，但本地文件的安全由你负责。
 7. **接口可能变**。`欲望注入.txt` 的格式、全局变量名、面板路由在后续版本可能调整，不承诺向后兼容。
 
-## 九、目录
+## 十四、目录
 
 ```
-src/index.js     插件主体：状态、tick、HTTP 路由、工具
-src/prompt.js    注入块渲染（纯函数，可单独用）
-src/curve.js     数值/时间窗/衰减/耦合（纯函数，有测试）
-src/events.js    事件表与冲击（纯函数，有测试）
-src/diary.js     心情日记
-src/unlock.js    渐进解锁
-src/config.js    全部配置项（schemastery）
-panel/index.html 面板（单文件，无构建）
-test/            node --test 用例（76 条）
+src/index.js      插件主体：状态、tick、HTTP 路由、工具注册
+src/prompt.js     注入块渲染（纯函数，可单独用）
+src/curve.js      数值 / 时间窗 / 衰减 / 耦合（纯函数，有测试）
+src/events.js     事件表与冲击（纯函数，有测试）
+src/diary.js      心情日记
+src/unlock.js     渐进解锁
+src/proactive.js  主动开口 / 发图的判据与账本（纯函数，有测试）
+src/config.js     全部配置项（schemastery，84 项）
+panel/index.html  面板（单文件，无构建，无外部资源）
+test/             node --test 用例（87 条，3 个文件）
 tools/preview.mjs 命令行预览：看现在到底注入了什么
-tools/doctor.mjs  体检：一条命令查安装、补丁、注入、面板、生图
+tools/doctor.mjs  体检：一条命令查安装、注入、状态、面板、生图
 tools/watch.mjs   监控：盯状态变化，值变了才打印
-docs/DESIGN.md   设计文档：每个数值为什么这么定
-docs/AUDIT.md    独立审查记录：四层视角、25 条问题、修复对照
-cordis.patch.yml DSH 挂载声明
+tools/_paths.mjs  上面三个工具共用的路径推断（不写死任何人的目录）
+tools/publish.mjs 作者自用：走 GitHub API 发版（直接用 git push 的话不需要）
+docs/DESIGN.md    设计文档：每个数值为什么这么定
+docs/AUDIT.md     独立审查记录
+patches/dsh-qq/   （不在仓库里）作者自用的通道插件镜像，含个人设定，已 gitignore
+cordis.patch.yml  DSH 挂载声明
+CHANGELOG.md      版本变更
+注意事项.md        安装与排查的踩坑记录
 ```
 
 自己跑一遍：
 
 ```bash
-node --test --test-concurrency=1                                   # 76 条测试
-node tools/doctor.mjs --panel http://127.0.0.1:<端口>/dsh-longing  # 25 项体检
-node tools/preview.mjs <workspace目录> qq unknown                  # 看当前注入块
+node --test --test-concurrency=1                                   # 87 条测试
+node tools/doctor.mjs --panel http://127.0.0.1:<端口>/dsh-longing  # 体检
+node tools/preview.mjs [状态目录] qq unknown                        # 看当前注入块
 ```
 
-## 十、更新日志
+体检工具不写死路径：状态目录按 `DSH_LONGING_DIR` → 插件家目录 → `cwd/workspace` 推断；
+装了 dsh-qq-onebot 才查补丁那一节（`DSH_QQ_SRC=<它的 src 目录>`），没装就跳过。
+
+## 十五、更新日志
+
+### v1.12.0
+
+对「换一台机器装上去」的审计版。改的全是**只在作者机器上成立**的东西和几个接线残缺的键，
+功能本身没变。
+
+**① 主人会话不再绑死 dsh-qq（这一条最要命）**
+`ownerOnly` 默认 true，而判据只认 dsh-qq 那张 `__dshQqOwnerSessions`。
+没装 dsh-qq、或者只跑 web / 别的通道 → 没人能登记 → `set / bump / preset / pause / diary / thought`
+永久 Permission Denied，主人自己也改不动；而且没有任何公开的登记口，看文档也无从下手。
+现在：
+- `globalThis.__dshLongingOwnerSession(sessionId, ttlMs)` 是通用登记口，通道插件收到主人私聊时调一次；
+- 老的 dsh-qq 表继续认；
+- 两边都不存在（这个装法里根本没有通道在管主人）→ 放行并打一条日志，别把插件整个拦死。
+
+**② 状态目录不再跟着 cwd 跑**
+默认改成 `$DSH_HOME/dsh-longing`（`dshHomePath` 服务 → `DSH_HOME` 环境变量 → `~/.dsh` 逐级回落），
+`DSH_LONGING_DIR` 可以覆盖。老目录里有状态就自动搬一次。
+
+**③ 工具不再叫 qq_longing、也不再自称「某个具体角色名」**
+- 工具名默认 `longing`；勾了 `qq` 通道时**额外**注册旧名 `qq_longing`，dsh-qq 的提示词不用改；
+- `personaName` 一项：面板标题和工具说明用它，留空就只写「她」；
+- 面板标题里的 `__TOKEN_FILE__` 挪到 `<body data-token-file>`：占位符原来还出现在 `<script>` 里，
+  那句「占位符还在不在」会被服务端自己替换掉，逻辑永远是假。
+
+**④ `ownerOnly` 之外的死键补齐**
+| 键 | 以前 | 现在 |
+|---|---|---|
+| `proactivePerHour` | 判据里读，但 schema 和面板可写清单都没有 → 提交进去被丢弃，永远 10 | 正式声明，面板可改 |
+| `proactiveCooldownMin` | 同上；而且一旦写进 0 就会变成「只隔 1 分钟」 | 0 = 跟 `cooldownMin` 走 |
+| `ownerIds` | 面板能写、没人读 | 删掉（从没被读过） |
+| `pausedUntil` | 写在 schema 里，运行时只认状态文件 | 删掉声明 |
+| `rememberAfterward` | 和 `memoryEnabled` 完全重复 | 标成已弃用 |
+
+**⑤ 默认值在默认曲线下根本到不了**
+- `initiateThreshold` 60 → **45**：性欲的时间地板是 30、一天一次高峰 +25，60 等于「打开自动也永远不开口」；
+- `imageThreshold` 140 → **110**：默认曲线下 `性欲+色情` 摸不到 140，主动发图等于没做。
+
+**⑥ 主动发图并入「主动行为」**
+`imageGate` 以前只看总开关，于是关掉「允许她主动开口」之后她还会自己发图；默认配置下
+路人第一天就可能被塞一张图。现在要求 `autoInitiate` 开着，而且必须是聊过之后。
+
+**⑦ 面板快照不再盖住设置页**
+`欲望面板配置.json` 里同时混着「启动时从插件配置抄来的快照」和「面板改过的键」，
+分不清 → 用户在 DSH 设置页改的值被上次启动的快照永久盖住（症状：设置页改了没反应）。
+现在用 `__panelKeys` 记下哪些键是面板改的，其余以插件配置为准。
+
+**⑧ 账本键补进 `STATE_KEYS`**
+`proactiveLog / lastInitiateAt / imageLog / lastImageInfo` 漏登记了。漏掉的后果和 1.0.0
+「重启丢进度」一样 —— 哪天被写进面板配置，下次启动就会拿旧快照反向覆盖账本。
+
+**⑨ 开发工具不再写死作者的盘符**
+`tools/doctor.mjs`、`preview.mjs`、`watch.mjs` 改成从 `DSH_LONGING_DIR` / `DSH_QQ_SRC` /
+参数推断（`tools/_paths.mjs`）；体检里没有 dsh-qq 就跳过那一节，不再报「补丁丢了」。
+
+**⑩ 测试 76 → 87 条**
+新增 `test/stranger.test.mjs`：九条「路人装一遍」的回归（没有 dsh-qq / 没有 statePath /
+没人登记主人 / 设置页改配置 / 面板占位符 / 发图门槛 / 每小时上限 / 账本键）。
+
+### v1.11.0
+
+**主动判据回到本插件**（`src/proactive.js`）：这批键以前只写在 schema 和面板可写清单里，
+全项目没有读取点 —— 面板改了不生效，真正限速的是通道插件自己的定时器。
+
+| 键 | 以前 | 现在 |
+|---|---|---|
+| `autoInitiate` | 没人读 | 没开 → 直接 `off`，通道不投机会 |
+| `idleTriggerMin` | 没人读 | 冷场门槛 |
+| `proactiveMaxPerDay` | 没人读 | 当天上限 |
+| `quietHours` | 没人读 | 安静时段（跨零点也对） |
+| `cooldownMin` / `proactiveCooldownMin` | 没人读 | 两次之间的间隔 |
+| `urgeRepeatMin` | 没人读 | 发情档位的更短间隔 |
+| `proactivePerHour` | 全项目 0 处 | 每小时上限 |
+| `initiateThreshold` | 没人读 | 性欲地板 |
+
+顺手接上的一批（默认值都不改变原有手感）：
+
+| 键 | 以前 | 现在 |
+|---|---|---|
+| `shyLewd` | 阈值从 `lewdDirect − 25` 硬推 | 它自己就是「色情低到多少算放不开」的地板（默认 30，等价于原推导） |
+| `distantPossess` | 没人读 | 占有 ≤ 它就换成「不争不抢」那句，并取代负面阶梯里重复的那句 |
+| `jealousy` | 没人读 | 吃醋敏感度按 `(50 − jealousy) × 0.4` 挪阈值：50 不变，100 更容易吃醋 |
+| `explicitThreshold` | 没人读 | 露骨这一档的独立地板（和 `lewdDirect + 13` 都要满足） |
+| `rejectionPenalty` | `reject` 事件数值写死 | 按 `/15` 缩放那条事件（受单次变化上限 6 约束） |
+| `pauseWord` | 没人读，通道侧硬编码正则 | 暴露 `__dshLongingPauseWord()`，通道插件认整句安全词 |
+
+对外钩子：`__dshLongingProactive()` / `__dshLongingMarkInitiate()` / `__dshLongingPauseWord()`，
+1.12 又加了 `__dshLongingImageGate()` / `__dshLongingMarkImage()` / `__dshLongingOwnerSession()`。
 
 ### v1.10.0
 
@@ -875,6 +1364,7 @@ affection    40    77    74    71    67    62    57
 - 24 小时曲线开始自己刷新；`tools` 服务晚就绪不再导致工具永远注册不上；超长请求体不再挂死连接；
 - 新增 `src/curve.js` 与 20 条测试；新增 `tools/preview.mjs`。
 
-## 十一、许可
+## 十六、许可
 
 MIT，见 [LICENSE](LICENSE)。
+

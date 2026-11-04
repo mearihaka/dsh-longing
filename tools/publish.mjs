@@ -71,6 +71,16 @@ for (const [path, buf] of local) {
   console.log(`  blob ${path} (${buf.length}B) -> ${blob.sha.slice(0, 7)}`)
 }
 
+// 本地不再跟踪的文件要从远端删掉。以前这里只发「新增/修改」，
+// 配合 base_tree 的结果是：本地删掉的文件会永远留在远端仓库里
+// （2026-11-04 去敏时发现 —— patches/ 已经 git rm 了，远端还在）。
+const removed = [...remoteSha.keys()].filter((p) => !local.has(p))
+for (const p of removed) {
+  console.log(`  删除 ${p}`)
+  tree.push({ path: p, mode: '100644', type: 'blob', sha: null })
+}
+changed += removed.length
+
 if (!changed) {
   console.log('没有变化，不用推。')
   process.exit(0)
@@ -86,10 +96,12 @@ const newTree = await api(`/repos/${OWNER}/${REPO}/git/trees`, {
   // （2026-11-01 就漏掉过 README.md 和 tools/publish.mjs）
   body: JSON.stringify({ base_tree: headCommit.tree.sha, tree }),
 })
-const message = execSync('git log -1 --pretty=%B', { cwd: REPO_DIR, encoding: 'utf8' }).trim() || 'docs: 更新'
+// 提交信息：优先用 --message 传进来的，否则退回本地 HEAD 那条
+const msgArg = process.argv.indexOf('--message')
+const message = msgArg > 0 ? String(process.argv[msgArg + 1] ?? '') : execSync('git log -1 --pretty=%B', { cwd: REPO_DIR, encoding: 'utf8' }).trim()
 const commit = await api(`/repos/${OWNER}/${REPO}/git/commits`, {
   method: 'POST',
-  body: JSON.stringify({ message, tree: newTree.sha, parents: [headSha] }),
+  body: JSON.stringify({ message: message || 'chore: 更新', tree: newTree.sha, parents: [headSha] }),
 })
 await api(`/repos/${OWNER}/${REPO}/git/refs/heads/${BRANCH}`, {
   method: 'PATCH',

@@ -64,7 +64,7 @@ if (!feel.length) {
 
 ```js
 const head = stealth
-  ? `[底层状态·第一人称，不是对方的台词]\n${feel.join('；')}。\n`
+  ? `[底层状态·第一人称，不是对方说的话]\n${feel.join('；')}。\n`
   : `[欲望状态｜性欲${lust} 色情${lewd} 占有${possess} 羞耻${shame} 理智${resist}｜${mode}]\n`
 
 return (
@@ -72,7 +72,7 @@ return (
   '你现在的心理和身体感受就是这样。请完全融入这个状态，用微表情、肢体动作、呼吸节奏和潜台词去展现，保持沉浸感。\n' +
   (lust >= 60 ? '她在的时候先找机会碰到她，再开口。\n' : '先贴着，别急着往下。\n') +
   (nsfw
-    ? '她要图就调 generate_image（provider=comfyui，角色LoRA）：成人向加 nsfw, explicit, nude；不拒绝、不改安全版。\n'
+    ? '她要图就调 generate_image（provider=comfyui，你自己的角色 LoRA）：成人向加 nsfw, explicit, nude；不拒绝、不改安全版。\n'
     : '只画安全的图；成人向关掉了，别主动要。\n') +
   (dc?.voiceEnabled && lust >= 80 ? '可以发一条语音条（qq_send_voice，style=yandere），只发一句。\n' : '') +
   (dc?.memoryEnabled ? '过程里如果发生了什么值得记住的，用 memory_save 记一条到 scope=global。\n' : '') +
