@@ -355,14 +355,16 @@ test('想要但不敢说：clash 会替掉档位句', () => {
 
 test('敢说但身体没动：另一种 clash', () => {
   // lust 20 / resist 70 → eff 0；lewd 75 → 什么都敢说
+  // 2026-11-07：加了成人内容总闸之后，这套断言必须显式开闸
+  // （关闸时 expr 一律压到 0，无论 lewd 多高都不会「嘴上没刹车」）
   const s = base({ lust: 20, resist: 70, affection: 40, lewd: 75 })
-  const b = buildBlock(s, cfg())
+  const b = buildBlock(s, cfg({ nsfwEnabled: true }))
   assert.match(b, /嘴上没刹车/)
 })
 
 test('两个都高时正常给档位，不再互相牵制', () => {
   const s = base({ lust: 90, resist: 10, affection: 80, lewd: 80 })
-  const b = buildBlock(s, cfg())
+  const b = buildBlock(s, cfg({ nsfwEnabled: true }))
   assert.doesNotMatch(b, /说不出口|嘴上没刹车/)
   assert.match(b, /现在这一档/)
   assert.match(b, /露骨的话可以直接说出口|没有遮拦/)
@@ -525,7 +527,8 @@ test('生图后端未知时不提图床，确定离线才提', () => {
   assert.doesNotMatch(unknown, /generate_image/)
   const down = buildBlock(base(), cfg(), { comfyUp: false })
   assert.match(down, /图床没开/)
-  const up = buildBlock(base(), cfg({ nsfwImages: true }), { comfyUp: true })
+  // 总闸也要开：nsfwImages 单开不再够（2026-11-07）
+  const up = buildBlock(base(), cfg({ nsfwEnabled: true, nsfwImages: true }), { comfyUp: true })
   assert.match(up, /generate_image/)
 })
 

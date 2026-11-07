@@ -78,6 +78,26 @@ test('没配 statePath：状态落在 DSH 给插件家的目录，不是 cwd/wor
   }
 })
 
+// 这一段专门守「保存设置却回 500」那类假警：状态码要断言，不能只看写没写进去。
+test('保存设置回 200，且改动真的生效（新键 curioEnabled / nsfwEnabled 也能存）', async () => {
+  const { dir, call } = boot()
+  const before = await call('GET', '/dsh-longing/api/config')
+  assert.equal(before.json.curioEnabled, false, '默认必须是不联网')
+  assert.equal(before.json.nsfwEnabled, false, '默认必须是成人内容关')
+
+  const save = await call('POST', '/dsh-longing/api/config', { curioEnabled: true, curioPerDay: 3, nsfwEnabled: true })
+  assert.equal(save.code, 200, `保存设置应回 200，实际 ${save.code}`)
+
+  const after = await call('GET', '/dsh-longing/api/config')
+  assert.equal(after.json.curioEnabled, true)
+  assert.equal(after.json.curioPerDay, 3)
+  assert.equal(after.json.nsfwEnabled, true)
+
+  const onDisk = JSON.parse(readFileSync(join(dir, '欲望面板配置.json'), 'utf8'))
+  assert.equal(onDisk.curioEnabled, true, '改过的键要落盘给只读文件的通道插件看')
+  assert.ok(Array.isArray(onDisk.__panelKeys) && onDisk.__panelKeys.includes('curioEnabled'))
+})
+
 test('老安装的 cwd/workspace 里有状态 → 自动搬一次，不丢进度', async () => {
   const cwd0 = process.cwd()
   const legacyCwd = mkdtempSync(join(tmpdir(), 'longing-legacy-'))
@@ -201,8 +221,9 @@ test('调用方只给几个键，也要得到全部默认值', async () => {
   const { call } = boot() // boot 只传了 comfyEnabled / peakWindow
   const cfg = await call('GET', '/dsh-longing/api/config')
   const keys = Object.keys(cfg.json ?? {}).filter((k) => !k.startsWith('__'))
-  // schema 共 84 项，其中 8 项是「七维 + scene 的初始值」，属状态、API 不返回 → 76
-  assert.equal(keys.length, 76, `实际 ${keys.length} 项`)
+  // schema 共 92 项（1.13.0 加 7 个 curio*，11-07 加 nsfwEnabled），其中 8 项是「七维 + scene 的初始值」，
+  // 属状态、API 不返回 → 84
+  assert.equal(keys.length, 84, `实际 ${keys.length} 项`)
   assert.ok('personaName' in cfg.json && 'proactivePerHour' in cfg.json)
   assert.ok(!('lust' in cfg.json) && !('scene' in cfg.json), '状态键不该出现在配置接口里')
 })

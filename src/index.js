@@ -9,6 +9,9 @@ import { addThought, formatDay, pruneDiary, recentDiary, recordEvent } from './d
 import { EVENTS, applyEvent, recentEvents } from './events.js'
 import { buildBlock, modeOf } from './prompt.js'
 import { imageGate, noteImage, noteInitiate, proactiveGate } from './proactive.js'
+// 2026-11-06：好奇心 + 自主搜索。心跳只调 tickCurio/shouldSearch（纯算术），
+// 真正发请求的只有 searchTopic 一处在 tick 里被 await 一次。
+import { CURIO_DEFAULTS, buildQuery, searchTopic, shouldSearch, tickCurio, toTopic } from './curio.js'
 import { boundaryLine, deepestUnlocked, nextLocked, unlockedOf } from './unlock.js'
 import {
   DIMS,
@@ -46,16 +49,21 @@ const NUM_KEYS = new Set([
   'cooldownMin', 'resistWeight', 'affectionWeight', 'coldLust', 'shyLewd', 'distantPossess', 'numbAffection',
   'explicitThreshold', 'imageThreshold', 'imagesPerDay', 'jealousy', 'rejectionPenalty',
   'comfyProbeSec', 'interactionLust', 'couplingRate', 'eventGain', 'lonelyHours', 'diaryDays',
+  // 2026-11-06：好奇心的参数必须进这份清单，否则面板保存会被 ALLOWED_KEYS 悄悄丢掉 ——
+  // 1.11.0 的 proactivePerHour 就是这么「改不动」的，别再犯一次。
+  'curioGainPerHour', 'curioDropOnTalk', 'curioSearchAt', 'curioCooldownMin', 'curioPerDay',
 ])
 const BOOL_KEYS = new Set([
-  'enabled', 'stealthInjection', 'autoInitiate', 'nsfwImages', 'curveEnabled', 'presetsEnabled', 'voiceEnabled',
+  'enabled', 'stealthInjection', 'autoInitiate', 'nsfwEnabled', 'nsfwImages', 'curveEnabled', 'presetsEnabled', 'voiceEnabled',
   'memoryEnabled', 'scheduleEnabled', 'pauseEnabled', 'rememberAfterward', 'ownerOnly', 'comfyEnabled', 'comfyAutoLaunch',
   'couplingEnabled', 'debugMode', 'feedbackThink', 'feedbackHint', 'feedbackSpeak', 'feedbackAct', 'unlocksEnabled',
+  'curioEnabled',
 ])
 const STR_KEYS = new Set([
   'channels', 'peakWindow', 'activeHours', 'quietHours', 'sleepWindow', 'pauseWord', 'personaNote',
   'comfyBaseUrl', 'comfyLaunchScript', 'comfyLaunchAllowDir', 'statePath', 'migrateFrom', 'negBreakpoints',
   'personaName', 'toolName',
+  'curioTopics',
 ])
 // 面板能写的键：写死是为了防止任意键落盘。状态键刻意不在里面。
 const ALLOWED_KEYS = new Set([...NUM_KEYS, ...BOOL_KEYS, ...STR_KEYS])
@@ -102,7 +110,12 @@ function writeJson(file, data, logger) {
       try {
         let stale = false
         try {
-          if (statSync(file).mtimeMs > wroteAt) stale = true
+          // 2026-11-07：原来直接比 `mtimeMs > wroteAt`，而文件系统时间戳的精度可能比
+          // Date.now() 高（或落在同一毫秒的下一格），于是「刚刚才被写过」的文件会被
+          // 误判成「别人写了更新的数据」→ 放弃本次写入、删掉 tmp、文件保持旧内容。
+          // 症状是间歇性的：同样的测试十次里偶尔红一次（面板配置写完读回还是旧值）。
+          // 加 50ms 容忍，仍能拦住真有人在期间写过的情况。
+          if (statSync(file).mtimeMs > wroteAt + 50) stale = true
         } catch {}
         if (stale) {
           unlinkSync(tmp)
@@ -333,6 +346,20 @@ export function apply(ctx, configIn) {
       ? out.grudges.filter((g) => g && Object.hasOwn(EVENTS, String(g.name ?? '')) && num(g.t) + num(g.days, 1) * 86_400_000 > Date.now()).slice(-3)
       : []
     out.firsts = out.firsts && typeof out.firsts === 'object' ? out.firsts : {}
+    // ── 好奇心（2026-11-06）──
+    // curio 是独立的驱动力，不进 curve.js 的七维耦合：那套算的是身体，
+    // 好奇心算的是「多久没换过新东西」，混在一起会互相污染。
+    out.curio = clampFloat(num(out.curio, CURIO_DEFAULTS.curioStart))
+    out.curioAt = num(out.curioAt, Date.now()) // 上次算好奇心的时刻，防止停机后一次性暴涨
+    out.curioDropAt = num(out.curioDropAt, 0) // 上次因为「他说了话」扣值的时刻，防一分钟扣一次
+    out.lastSearchAt = num(out.lastSearchAt, 0)
+    out.searchLog = Array.isArray(out.searchLog)
+      ? out.searchLog.map(Number).filter((t) => Number.isFinite(t) && t > 0).sort((a, b) => a - b).slice(-48)
+      : []
+    // 搜到但还没说出口的那一条；6 小时就过期（prompt.js 那边判）
+    out.pendingTopic = out.pendingTopic && typeof out.pendingTopic === 'object' ? out.pendingTopic : null
+    // 他最近说的一句原文，用来抠搜索词；只在内存和状态文件里，不外发
+    out.lastUserText = String(out.lastUserText ?? '').slice(0, 200)
     out.updatedAt = num(out.updatedAt, Date.now())
     return out
   }
@@ -599,15 +626,18 @@ export function apply(ctx, configIn) {
   // 通道插件收到主人消息时调一下：涨性欲、涨好感（热重载不重复注册）
   // kind 默认 'owner'：别的通道插件通常不会传参数，没传就当主人说话 ——
   // 原来只认字面 'owner'，不传等于「没联系过」，于是主动判据永远停在 never。
-  globalThis.__dshLongingNote = (kind = 'owner') => {
+  globalThis.__dshLongingNote = (kind = 'owner', text = '') => {
     if (kind !== 'owner' && kind !== 'contact') return
     // 暂停期间不涨 —— 否则「暂停」只是个标签
     if (isPaused()) return
     const eff = settings()
+    // 2026-11-06：顺手记下他刚说的一句，好奇心搜什么词靠它抠。
+    // 第二个参数是可选的，老调用方（不传 text）行为完全不变。
+    if (text) state.lastUserText = String(text).slice(0, 200)
     const nextLust = clampFloat(num(state.lust, DEFAULTS.lust) + num(eff?.interactionLust, 0.1))
     const nextAff = clampFloat(num(state.affection, DEFAULTS.affection) + num(eff?.affectionGain, 1))
     // 已经顶满就不重复写盘（连发多条消息时省掉成串的同步 IO）
-    if (nextLust === state.lust && nextAff === state.affection) return
+    if (nextLust === state.lust && nextAff === state.affection && !text) return
     state.lust = nextLust
     state.affection = nextAff
     state.lastContactAt = Date.now() // 「被晾着多久」从这里算
@@ -638,7 +668,39 @@ export function apply(ctx, configIn) {
     }
   })
 
-  function tick() {
+  // 2026-11-06：好奇心搜索。这是插件里除 ComfyUI 探活之外唯一对外发请求的地方。
+  // 失败不重试 —— 冷却到了自然会再来一次，重试只会把额度烧在同一个坏词上。
+  let searching = false
+  async function runCurioSearch(eff) {
+    if (searching) return
+    searching = true
+    const nowTs = Date.now()
+    try {
+      const q = buildQuery(state, eff, Math.floor(nowTs / 60_000))
+      const results = await searchTopic(q, { limit: 5 })
+      const topic = toTopic(results, Math.floor(nowTs / 60_000))
+      state = normalizeState({
+        ...state,
+        // 搜完压到 20，不归零：刚看完就不想再看，太假
+        curio: 20,
+        lastSearchAt: nowTs,
+        searchLog: [...(state.searchLog ?? []), nowTs],
+        pendingTopic: topic ?? state.pendingTopic ?? null,
+      })
+      writeJson(stateFile, snapState(), logger)
+      if (topic) logger.info?.(`[dsh-longing] 好奇心：搜了「${q}」→ ${String(topic.title).slice(0, 40)}`)
+      // 抓到 0 条有两种可能：真没结果，或者 Bing 改了 HTML 结构。
+      // 后者会静默失效（用户只会觉得「她最近不怎么主动了」），所以提到 warn，
+      // 让它在日志里留痕，而不是伪装成「她不感兴趣」。
+      else logger.warn?.(`[dsh-longing] 好奇心：搜了「${q}」但一条都没解析出来（可能是 Bing 结构变了）`)
+    } catch (e) {
+      logger.warn?.(`[dsh-longing] 好奇心搜索失败：${e?.message ?? e}`)
+    } finally {
+      searching = false
+    }
+  }
+
+  async function tick() {
     const eff = settings()
     if (eff?.enabled === false) return
 
@@ -658,6 +720,18 @@ export function apply(ctx, configIn) {
     const disk = readJson(stateFile, null)
     if (disk && num(disk.updatedAt) > num(state.updatedAt)) state = normalizeState({ ...state, ...disk })
     state = normalizeState(nextState(state, eff, Date.now()))
+
+    // ── 好奇心（2026-11-06）──
+    // 先算数值（纯算术，不联网），够了再问 shouldSearch（冷却/日上限/暂停），
+    // 全过才真发一次请求。心跳本身永远不发请求 —— 这是硬约束。
+    {
+      const cur = tickCurio(state, eff, Date.now())
+      state = normalizeState({ ...state, curio: cur.curio, curioAt: Date.now(), curioDropAt: cur.dropAt ?? num(state.curioDropAt) })
+      if (cur.want) {
+        const admit = shouldSearch(state, eff, Date.now())
+        if (admit.ok) await runCurioSearch(eff)
+      }
+    }
 
     // 被晾着：超过 lonelyHours 没有消息 → 一天最多记一次失望。
     // 按「距上次间隔」而不是按日期：23:50 和次日 00:10 不该算两次。

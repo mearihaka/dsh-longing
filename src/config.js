@@ -68,6 +68,20 @@ export const ConfigSchema = Schema.object({
   fatigueTired: Schema.number().min(0).max(100).default(60).description('疲劳到多少开始撑不住'),
   shameHiding: Schema.number().min(0).max(100).default(60).description('羞耻到多少开始口是心非'),
   resistHolding: Schema.number().min(0).max(100).default(60).description('理智到多少开始半推半就'),
+
+  // ── 好奇心与自主搜索（2026-11-06 新增）──
+  // 为什么要它：原来的主动开口只有 Lust/Lewd 两个动机，数值一被满足就掉，
+  // 结果是「陪得越久越不会被主动找」。好奇心不看亲密，只看多久没换过新东西。
+  // 搜索不在心跳里，只在判定放行的那一刻发一次请求（见 curio.js）。
+  curioEnabled: Schema.boolean().default(false).description('开启好奇心：没有新东西时会自己想去查点东西。**默认关**——开着这一项，插件就会自己联网搜（查询词由最近的对话生成，发往 Bing）'),
+  curioGainPerHour: Schema.number().min(0).max(60).default(14).description('一小时没有新东西，好奇心涨多少'),
+  curioDropOnTalk: Schema.number().min(0).max(50).default(10).description('说过一次话，好奇心掉多少'),
+  curioSearchAt: Schema.number().min(0).max(100).default(65).description('好奇心到多少才允许去搜'),
+  curioCooldownMin: Schema.number().min(10).max(1440).default(90).description('两次搜索之间至少隔多少分钟'),
+  curioPerDay: Schema.number().min(0).max(48).default(6).description('24 小时内最多搜几次（0 = 不搜；一次约 2000~4000 token）'),
+  curioTopics: Schema.array(Schema.string())
+    .default([])
+    .description('她不知道该搜什么时的兜底话题（一个一行；留空 = 用「最近科技新闻」这类通用词）'),
   // ── 好感度 ──
   interactionLust: Schema.number().min(0).max(20).step(0.1).default(0.1).description('主人每说一句涨多少性欲（很小，避免聊天把性欲顶满）'),
   affectionGain: Schema.number().min(0).max(10).default(0.3).description('每次主人聊天加多少好感（默认很小，好感要靠事件养）'),
@@ -141,7 +155,14 @@ export const ConfigSchema = Schema.object({
     .default(110)
     .description('主动发图门槛：性欲 + 色情 合计到多少，她会自己出一张图发过来（0~200）。默认 110 ≈ 性欲 45 + 色情 65；原来 140 在默认曲线下基本到不了'),
   imagesPerDay: Schema.number().min(0).max(20).default(2).description('每天主动发图上限（张）；0 = 不发'),
-  nsfwImages: Schema.boolean().default(false).description('允许成人向图片（默认关）'),
+  // ── 成人内容总闸（2026-11-07）──
+  // 为什么要单独一个总闸：以前 nsfwImages 只关「成人图片」，但露骨的话、娇喘、亲密事件
+  // 全都不归它管 —— 用户以为关掉了「成人向」，结果她照样说骚话、照样发娇喘。
+  // 现在 nsfwEnabled 是唯一的成人内容开关：关掉之后不谈、不说、不画、不发。
+  nsfwEnabled: Schema.boolean()
+    .default(false)
+    .description('全局成人内容总开关：关掉后不说露骨的话、不发诱惑图、不发娇喘、不记亲密事件'),
+  nsfwImages: Schema.boolean().default(false).description('允许成人向图片（只对图片生效，总闸 nsfwEnabled 关着时无效）'),
 
   // ── 功能开关 ──
   curveEnabled: Schema.boolean().default(true).description('面板显示 24 小时曲线'),

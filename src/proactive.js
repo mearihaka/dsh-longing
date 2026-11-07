@@ -132,8 +132,13 @@ export function proactiveGate({ cfg = {}, state = {}, now = Date.now() } = {}) {
   if (coldMin < idle) return deny('cold', silenceFrom + idle * MINUTE)
 
   // 地板：性欲低于这个值她根本不会主动（不是「不想说」，是「没那个心思」）
+  // 2026-11-06：手里有东西的时候不看这道门 —— 她翻到点什么想给他看，
+  // 跟想不想要是两件完全不同的事。别的门（冷却/每小时/每天）照样管，
+  // 因为那些管的是「别烦人」和「别烧钱」，跟动机无关。
+  const topic = state?.pendingTopic && typeof state.pendingTopic === 'object' ? state.pendingTopic : null
+  const topicFresh = topic && now - num(topic.at, 0) < 6 * HOUR
   const floor = num(cfg?.initiateThreshold, 60)
-  if (lust < floor) return deny('lowlust')
+  if (lust < floor && !topicFresh) return deny('lowlust')
 
   // 发情档位允许更密：urgeRepeatMin 顶掉 cooldownMin。
   // proactiveCooldownMin = 0 表示「跟 cooldownMin 走」——不能直接把它当 0 分钟用，
@@ -156,7 +161,7 @@ export function proactiveGate({ cfg = {}, state = {}, now = Date.now() } = {}) {
     return deny('daily', tomorrow)
   }
 
-  return { ...out, allowed: true, reason: 'ok' }
+  return { ...out, allowed: true, reason: 'ok', via: topicFresh ? 'curio' : 'lust', topic: topicFresh ? topic : null }
 }
 
 /** 真的说出口之后记一笔（通道插件在投递成功后调）。返回要并回 state 的字段。 */
@@ -165,6 +170,8 @@ export function noteInitiate({ state = {}, now = Date.now(), info = null } = {})
   const patch = { proactiveLog: log, lastInitiateAt: now }
   // 留个痕：谁执行的、当时什么档位，面板和日记都能用上
   if (info && typeof info === 'object') patch.lastInitiateInfo = { ...info, t: now }
+  // 2026-11-06：话题说出去就作废，否则下一轮会把它当新发现再讲一遍
+  if (state?.pendingTopic) patch.pendingTopic = null
   return patch
 }
 
@@ -203,7 +210,11 @@ export function imageGate({ cfg = {}, state = {}, now = Date.now() } = {}) {
   const scene = String(state?.scene ?? '').trim()
 
   // 类型：先看敢不敢发诱惑，再看亲近程度，再看有没有场景，最后退到风景
-  const nsfw = cfg?.nsfwImages !== false
+  // 2026-11-07：这里原来是 `nsfwImages !== false`，而 prompt.js 那边用的是 `=== true`。
+  // 两处口径不一致：用户没设这个键时，判据认为「可以发诱惑」，注入却说「成人向关掉了」，
+  // 结果她既不敢发诱惑、又把「可以发安全图」那档也一起吞了。统一成严格 true。
+  // 2026-11-07 晚：再加一道总闸 —— nsfwEnabled 关着时，图片层面再开也不给诱惑档。
+  const nsfw = cfg?.nsfwEnabled === true && cfg?.nsfwImages === true
   const kind = nsfw && lust >= num(cfg?.urgeSpeak, 70) && lewd >= num(cfg?.lewdDirect, 55)
     ? 'seduce'
     : aff >= num(cfg?.affectionClose, 60)

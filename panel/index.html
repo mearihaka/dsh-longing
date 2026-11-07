@@ -199,6 +199,26 @@
     <p id="proactiveNow" class="muted" style="margin-top:6px">判据加载中…</p>
   </div>
 
+  <!-- 2026-11-07：好奇心单独一张卡。
+       为什么不并进「主动行为」：它不是一个该用手拖的数值 —— curio 由心跳算出来，
+       用户真正需要的是「她现在有多想看点新东西、上次搜了什么、今天还剩几次」。
+       做成滑块会误导成「可以直接调」，而做成只读仪表才解释得清「她为什么突然去联网」。
+       下面那几行参数才可调，且决定她会不会真的发请求。 -->
+  <div class="card" id="curioCard">
+    <h2>好奇心（没人说话的时候，她会自己去翻点东西）</h2>
+    <p id="curioNow" class="muted">判据加载中…</p>
+    <div class="grid" style="margin-top:8px">
+      <label class="check"><input type="checkbox" id="curioEnabled" /> 允许她自己联网去搜</label>
+      <label class="field"><span>好奇心到多少才搜（0~100）</span><input type="number" id="curioSearchAt" min="0" max="100" /></label>
+      <label class="field"><span>24 小时最多搜几次（0 = 不搜）</span><input type="number" id="curioPerDay" min="0" max="48" /></label>
+      <label class="field"><span>两次至少隔（分钟）</span><input type="number" id="curioCooldownMin" min="10" max="1440" /></label>
+      <label class="field"><span>一小时没有新东西涨多少</span><input type="number" id="curioGainPerHour" min="0" max="60" /></label>
+      <label class="field"><span>他说过话之后掉多少</span><input type="number" id="curioDropOnTalk" min="0" max="50" /></label>
+      <label class="field" style="grid-column:1/-1"><span>兜底话题（一行一个；留空就用通用词）</span><textarea id="curioTopics" rows="3" placeholder="最近科技新闻&#10;某个游戏的更新"></textarea></label>
+    </div>
+    <p class="muted">一次搜索约 2000~4000 token。搜到的东西不会当场说出来：先挂在状态里，等她自己想开口的时候用；6 小时没说出来就作废。抓回来的标题会先过一遍消毒才会进提示词。</p>
+  </div>
+
   <div class="card">
     <h2>强度与功能</h2>
     <div class="grid">
@@ -210,7 +230,8 @@
       <label class="field"><span>开始半推半就（理智）</span><input type="number" id="resistHolding" min="0" max="100" /></label>
       <label class="field"><span>主动发图门槛（性欲+色情）</span><input type="number" id="imageThreshold" min="0" max="200" /></label>
       <label class="field"><span>每天主动发图上限（张）</span><input type="number" id="imagesPerDay" min="0" max="20" /></label>
-      <label class="check"><input type="checkbox" id="nsfwImages" /> 允许成人向图片</label>
+      <label class="check"><input type="checkbox" id="nsfwEnabled" /> 允许成人内容（总闸：关掉后不说露骨的话、不发诱惑图、不发娇喘）</label>
+      <label class="check"><input type="checkbox" id="nsfwImages" /> 允许成人向图片（要总闸也开着才生效）</label>
       <label class="check"><input type="checkbox" id="curveEnabled" /> 显示曲线</label>
       <label class="check"><input type="checkbox" id="presetsEnabled" /> 显示预设按钮</label>
       <label class="check"><input type="checkbox" id="voiceEnabled" /> 发情时发语音</label>
@@ -375,6 +396,43 @@ function buildEventButtons(){
   $('evClimax').onclick = () => fireEvent('climax')
 }
 
+/**
+ * 好奇心：只读地把「她为什么突然去搜」摊开。
+ * 2026-11-07：这一维以前在面板上完全不存在，而它默认是开着的、会联网 ——
+ * 用户只会在「她莫名其妙说了句外面的事」时才发现，那太晚了。
+ */
+function renderCurio(){
+  const el = $('curioNow'); if (!el) return
+  const curio = Math.round(Number(state.curio) || 0)
+  const at = Number(state.curioSearchAt ?? 0) || 65
+  const log = Array.isArray(state.searchLog) ? state.searchLog.filter((t) => Date.now() - t < 86400000) : []
+  const perDay = Number(state.curioPerDay ?? 0) || 6
+  const left = Math.max(0, perDay - log.length)
+  const last = Number(state.lastSearchAt) || 0
+  const ago = (t) => {
+    if (!t) return '还没搜过'
+    const m = Math.round((Date.now() - t) / 60000)
+    if (m < 60) return m + ' 分钟前'
+    if (m < 1440) return Math.round(m / 60) + ' 小时前'
+    return Math.round(m / 1440) + ' 天前'
+  }
+  const topic = state.pendingTopic && typeof state.pendingTopic === 'object' ? state.pendingTopic : null
+  const topicFresh = topic && Date.now() - Number(topic.at || 0) < 6 * 3600000
+
+  const bar = '█'.repeat(Math.round(curio / 10)) + '░'.repeat(10 - Math.round(curio / 10))
+  const head = curio >= at
+    ? `<span class="ok">✓ 够了，下一次 tick 就可能去搜</span>`
+    : `<span class="muted">还差 ${at - curio}</span>`
+
+  el.innerHTML =
+    `<div>好奇心 <span style="font-family:monospace">${bar}</span> ${curio}/100（门槛 ${at}）${head}</div>` +
+    `<div style="margin-top:4px">今天已搜 ${log.length}/${perDay === 0 ? '∞' : perDay} 次｜上次 ${ago(last)}</div>` +
+    (topicFresh
+      ? `<div style="margin-top:4px">手上还挂着一件没说出口的：<b>${String(topic.title || '').slice(0, 50)}</b>（${ago(Number(topic.at) || 0)}搜到的）</div>`
+      : `<div style="margin-top:4px" class="muted">手上没有待说的话题</div>`) +
+    (left === 0 && perDay > 0 ? `<div style="margin-top:4px" class="warn">今天的额度用完了，她到明天才会再搜</div>` : '')
+}
+
 function renderEvents(){
   const recent = state.recent || []
   $('evRecent').textContent = recent.length
@@ -471,6 +529,7 @@ function renderState(){
   renderEvents()
   renderGates()
   renderProactive()
+  renderCurio()
   renderDebug()
   const paused = Number(state.pausedUntil||0) > Date.now()
   $('paused').style.display = paused ? 'inline-block' : 'none'
@@ -554,6 +613,8 @@ function fillCfg(){
     if (k === 'channels') continue
     const el = $(k); if (!el) continue
     if (k === 'ownerIds') { el.value = Array.isArray(v) ? v.join(',') : (v ?? ''); continue }
+    // 数组字段在面板上是多行文本（一行一个），不这样写会显示成 a,b
+    if (k === 'curioTopics') { el.value = Array.isArray(v) ? v.join('\n') : (v ?? ''); continue }
     if (el.type === 'checkbox') el.checked = !!v
     else el.value = v
   }
@@ -596,6 +657,12 @@ $('saveCfg').onclick = async ()=>{
     for (const k of Object.keys(cfg)){
       if (k === 'channels' || k === 'pausedUntil') continue
       const el = $(k); if (!el) continue
+      // 2026-11-07：curioTopics 是数组，textarea 里一行一个。
+      // 不单独处理的话它会被当成普通字符串提交，服务端 STR_KEYS 那条会把数组压成 "[object Object]"。
+      if (k === 'curioTopics') {
+        patch[k] = String(el.value || '').split('\n').map((s) => s.trim()).filter(Boolean).slice(0, 20)
+        continue
+      }
       // 空着就别写：Number('') === 0，把「每小时衰减」清空会变成 0，
       // 整条时间曲线当场停摆，症状和 1.0.0 那个 bug 一模一样。
       if (el.type !== 'checkbox' && String(el.value).trim() === '') continue

@@ -52,6 +52,9 @@
 | 令牌保护 | 数据接口要 `x-desire-token`；令牌放 `sessionStorage`，只绑回环地址 |
 | 工具 | `longing`：`get / set / bump / preset / pause / event / events / diary / thought`，改值只在主人私聊（勾了 `qq` 通道时旧名 `qq_longing` 同时注册，v1.12 之前一直叫这个） |
 | 生图后端（可选） | 探测 ComfyUI 是否在线，用状态影响画什么；未知态不会乱发指令 |
+| 处境化描写（v1.13.0） | 注入的不是整句模板，而是「数值档位 + 当场处境（时间/在做什么/身体）+ 让她自己先想一遍」，同一个档位不会重复同一句 |
+| 好奇心（v1.13.0，默认关） | 只看「多久没换过新东西」的第八条驱动力；打开后会自己联网搜一条话题，等到下次主动开口时讲；**默认关 = 默认不联网** |
+| 成人内容总闸（v1.13.0） | `nsfwEnabled`：一个开关管住露骨的话、诱惑图、娇喘、亲密事件；默认关 |
 
 ## 三、安装
 
@@ -207,11 +210,11 @@ node --test --test-concurrency=1
     debugMode: true                               # 想直接拖滑块改数值时
 ```
 
-### 4.3 配置项总表（schema 84 项；`GET /api/config` 返回 76 项）
+### 4.3 配置项总表（schema 92 项；`GET /api/config` 返回 84 项）
 
-下面 84 项是 `src/config.js` 里声明的全部配置。其中 8 项（`lust / lewd / possess / shame / resist /
+下面 92 项是 `src/config.js` 里声明的全部配置。其中 8 项（`lust / lewd / possess / shame / resist /
 fatigue / affection / scene`）是**初始数值**，属状态、面板和 API 都不返回（见 4.4），所以
-`GET /api/config` 实际回 76 项。
+`GET /api/config` 实际回 84 项。
 
 | 键 | 默认 | 说明 |
 |---|---|---|
@@ -289,6 +292,14 @@ fatigue / affection / scene`）是**初始数值**，属状态、面板和 API �
 | `comfyProbeSec` | 60 | 探测间隔（秒） |
 | `migrateFrom` | "" | 旧版状态目录，首次启动搬一次 |
 | `statePath` | "" | 状态文件路径；留空 = 3.3 里那套回落顺序 |
+| `nsfwEnabled` | false | 成人内容总闸：关着时不说露骨的话、不发诱惑图、不发娇喘、不记亲密事件 |
+| `curioEnabled` | false | 好奇心（v1.13.0）：**默认关 = 不联网**。打开后她会在没新东西时自己搜一条话题 |
+| `curioGainPerHour` | 14 | 一小时没有新东西，好奇心涨多少 |
+| `curioDropOnTalk` | 10 | 说过一次话，好奇心掉多少 |
+| `curioSearchAt` | 65 | 好奇心涨到多少才允许去搜 |
+| `curioCooldownMin` | 90 | 两次搜索之间至少隔多少分钟 |
+| `curioPerDay` | 6 | 24 小时内最多搜几次（0 = 不搜；一次约 2000~4000 token） |
+| `curioTopics` | `[]` | 兜底话题（一个一行）；留空则用「最近科技新闻」这类通用词 |
 
 ### 4.4 哪些键不能当配置改
 
@@ -475,8 +486,19 @@ rm <profile目录>/node_modules/dsh-longing
 
 **明确不需要**
 
-外部数据库、Python、云服务、任何 API key。所有数据都是本地 JSON，面板是一条本地 HTTP 路由，
-插件不联网（除了探测 `comfyBaseUrl` 那个本机地址）。
+外部数据库、Python、云服务、任何 API key。所有数据都是本地 JSON，面板是一条本地 HTTP 路由。
+
+**联网（只有两处，都不默认发生）**
+
+| 出口 | 什么时候 | 默认 |
+|---|---|---|
+| 探测 `comfyBaseUrl`（本机回环） | 开了 `comfyEnabled` 时按 `comfyProbeSec` 探一次 | 只探本机地址 |
+| 好奇心搜索：`https://cn.bing.com/search?q=…` | 只有 `curioEnabled: true` 且攒够好奇心、过了冷却与每日上限才会发一次 | **`curioEnabled` 默认 false = 一次都不发** |
+
+好奇心那一处的查询词由**最近的对话内容**生成（技术词优先，撒娇词与名字会被剔掉，剔不动就退回
+`curioTopics` 或通用词），一次最多 2 个 query、每天最多 `curioPerDay` 次（默认 6，约 2000~4000 token/次）。
+关掉的方式有三种，任选：`curioEnabled: false`、`curioPerDay: 0`、或面板「好奇心」卡上的开关。
+搜到的只是一条标题，挂在状态下等下次主动开口时讲；**搜不到就什么都不发生**，不会报错也不会卡住注入。
 
 **平台**
 
@@ -747,6 +769,51 @@ HTTP 也有：`GET /dsh-longing/api/proactive`（带 `x-desire-token`），返�
 面板那张卡底部会直接显示**此刻能不能主动、为什么不能、下次最早多久**——
 不再是「改完像没反应」。
 
+### 处境化描写：不再念稿（v1.13.0）
+
+以前每个档位吐一句写死的话，模型拿到只能照抄或改几个字，换十套文案照样像在念设定稿；
+而且干跑发现 `lust 45 / resist 55` 算出来 `eff≈14`，绝大多数时间走的都是写死得最厉害的那一档。
+
+现在注入块拆成三层：
+
+| 层 | 给什么 | 例子 |
+|---|---|---|
+| 数值 | 只当参数选档，不当句子 | `lust 62` → 落 60 档 |
+| 处境 | 时间 / 在做什么 / 身体，各抽一条拼起来 | `外面在下雨，你站在窗边，看着窗外的车灯发呆`／`坐久了腰发酸` |
+| 自述 | 要她在开口前先在心里过一遍 | `先在心里过一遍：这会儿身体是什么感觉、想不想开口、为什么还不动` |
+
+关键在于第三层：**想法由模型当场产生**，上面给的只是处境和参数。处境按「分钟数 + 数值和」做种子抽取，
+所以同一档位十分钟内不会重复同一句；抽签代码在 `src/mood.js`（纯函数，无 IO）。
+
+### 好奇心：她会自己去翻点新东西（v1.13.0，默认关）
+
+原来的主动开口只有性欲和色情两个动机 —— 数值一被满足就掉下去，结果「陪得越久越不会被主动找」，
+正好反着来。好奇心是第八条驱动力，**不看亲密，只看多久没换过新东西**：
+
+```
+没有新东西 → 每小时 +curioGainPerHour      说过一次话 → −curioDropOnTalk
+涨到 curioSearchAt（默认 65）→ 允许去搜一次  冷却 curioCooldownMin(90 分) / 每天 curioPerDay(6 次)
+搜到一条 → 挂成 pendingTopic（6 小时内有效）→ 下次主动开口时讲，讲完作废
+```
+
+四道门全过才发请求，心跳里只做算术（`tickCurio` / `shouldSearch`）；真发请求的只有 `searchTopic`
+一处，超时或解析不到就返回空，**不会卡住注入**。
+
+**隐私与成本，写在明面上**：
+
+- `curioEnabled` 默认 **false**，也就是装完默认一次都不联网；
+- 查询词由最近一句对话生成：技术词优先，名字、撒娇词、纯符号会被剔掉；剔不动就退回 `curioTopics` 或通用词；
+- 发往 `cn.bing.com`（与你浏览器搜同一类请求，不带任何状态文件内容，只带那几个词）；
+- 每次约 2000~4000 token（抓回来的标题要进上下文），每天上限默认 6 次；
+- 不想要就 `curioEnabled: false`（默认）或 `curioPerDay: 0`，两者都能立刻停。
+
+### 成人内容总闸（v1.13.0）
+
+`nsfwEnabled` 默认 **false**，是唯一的成人内容开关：关着时不说露骨的话、不发诱惑图、不发娇喘、
+不记亲密事件；`nsfwImages` 只对图片生效，总闸关着时它没有意义。
+以前这两处判据口径不一致（判据按 `!== false`、注入按 `=== true`），会出现「她既不敢发诱惑、
+又把安全图那档一起吞了」，现在统一成严格 `true`。
+
 > 通道插件没装 / 还没就绪时，`__dshLongingProactive` 是 `undefined`，
 > 通道应当退回自己的规则，不能因为依赖方缺位把主动说话整条功能弄没。
 
@@ -976,9 +1043,9 @@ src/events.js     事件表与冲击（纯函数，有测试）
 src/diary.js      心情日记
 src/unlock.js     渐进解锁
 src/proactive.js  主动开口 / 发图的判据与账本（纯函数，有测试）
-src/config.js     全部配置项（schemastery，84 项）
+src/config.js     全部配置项（schemastery，92 项）
 panel/index.html  面板（单文件，无构建，无外部资源）
-test/             node --test 用例（87 条，3 个文件）
+test/             node --test 用例（119 条，4 个文件）
 tools/preview.mjs 命令行预览：看现在到底注入了什么
 tools/doctor.mjs  体检：一条命令查安装、注入、状态、面板、生图
 tools/watch.mjs   监控：盯状态变化，值变了才打印
@@ -995,7 +1062,7 @@ CHANGELOG.md      版本变更
 自己跑一遍：
 
 ```bash
-node --test --test-concurrency=1                                   # 87 条测试
+node --test --test-concurrency=1                                   # 119 条测试
 node tools/doctor.mjs --panel http://127.0.0.1:<端口>/dsh-longing  # 体检
 node tools/preview.mjs [状态目录] qq unknown                        # 看当前注入块
 ```
@@ -1059,7 +1126,7 @@ node tools/preview.mjs [状态目录] qq unknown                        # 看当
 `tools/doctor.mjs`、`preview.mjs`、`watch.mjs` 改成从 `DSH_LONGING_DIR` / `DSH_QQ_SRC` /
 参数推断（`tools/_paths.mjs`）；体检里没有 dsh-qq 就跳过那一节，不再报「补丁丢了」。
 
-**⑩ 测试 76 → 87 条**
+**⑩ 测试 76 → 91 条**
 新增 `test/stranger.test.mjs`：九条「路人装一遍」的回归（没有 dsh-qq / 没有 statePath /
 没人登记主人 / 设置页改配置 / 面板占位符 / 发图门槛 / 每小时上限 / 账本键）。
 

@@ -34,7 +34,7 @@ const read = (p) => {
 const exists = (p) => existsSync(p)
 
 // ── 1. dsh-longing 本体 ──
-for (const f of ['index.js', 'prompt.js', 'curve.js', 'events.js', 'diary.js', 'unlock.js', 'config.js']) {
+for (const f of ['index.js', 'prompt.js', 'curve.js', 'events.js', 'diary.js', 'unlock.js', 'config.js', 'mood.js', 'curio.js', 'proactive.js']) {
   if (exists(join(SELF, f))) ok(`longing/src/${f}`)
   else bad(`longing/src/${f}`, '缺文件')
 }
