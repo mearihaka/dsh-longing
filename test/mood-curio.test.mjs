@@ -2,7 +2,7 @@
  * mood.js + curio.js 的单元测试（2026-11-07 补）。
  *
  * 为什么补：1.13.0 加了 369 行新逻辑（处境抽签 + 好奇心 + 联网搜索），
- * 交付时只有一份临时自查脚本，`test/` 里一条断言都没有 —— 外部审计把这个点出来了，
+ * 交付时只有一份临时自查脚本，`test/` 里一条断言都没有 —— 这一块当时一条断言都没有，
  * 说「能跑 ≠ 有覆盖」。这个文件把那 30 项自查落成正式的回归。
  *
  * 覆盖范围：
@@ -106,7 +106,7 @@ test('shouldSearch：滚出 24 小时的旧账不占额度', () => {
   assert.equal(shouldSearch({ searchLog: old }, { curioEnabled: true }, now).ok, true)
 })
 
-// 审计 C2：0 是「一次都不搜」，不是「不限」。
+// 0 值语义：0 是「一次都不搜」，不是「不限」。
 test('shouldSearch：curioPerDay = 0 就是一次都不搜', () => {
   const now = Date.now()
   const cfg = { curioEnabled: true, curioPerDay: 0 }
@@ -115,7 +115,7 @@ test('shouldSearch：curioPerDay = 0 就是一次都不搜', () => {
   assert.equal(shouldSearch({}, { curioEnabled: true, curioPerDay: 3 }, now).ok, true, '设 3 就还是能搜')
 })
 
-// 审计 C4：tick 与 shouldSearch 同口径，缺键一律当关。
+// 开关口径：tick 与 shouldSearch 必须一致，缺键一律当关。
 test('tickCurio：没有这个键也算关，面板不会空涨', () => {
   const now = Date.now()
   const tenHours = { curio: 0, curioAt: now - 10 * HOUR, lastContactAt: 0 }
@@ -128,7 +128,7 @@ test('tickCurio：没有这个键也算关，面板不会空涨', () => {
   assert.equal(tickCurio(tenHours, { curioEnabled: true }).want, true, '开着才涨到门槛')
 })
 
-// 审计 C5：安静时段与活跃时段要真的拦。
+// 时段门：安静时段与活跃时段要真的拦。
 test('shouldSearch：安静时段 / 非活跃时段不发请求', () => {
   const d = new Date()
   d.setHours(4, 0, 0, 0)
@@ -285,7 +285,7 @@ test('buildBlock：自述指令在每个分支都在（不然退回念稿模式�
   }
 })
 
-// ── 四·补：审计 C3 / C7 —— 0 是「不发」，兜底要和 schema 一致 ──
+// ── 四·补：0 值语义与兜底 —— 0 是「不发」，兜底要和 schema 一致 ──
 test('imageGate：imagesPerDay = 0 就是一张都不发（不是不限）', () => {
   const now = Date.now()
   const state = {

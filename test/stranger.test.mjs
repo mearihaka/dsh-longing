@@ -78,7 +78,7 @@ test('没配 statePath：状态落在 DSH 给插件家的目录，不是 cwd/wor
   }
 })
 
-// 审计 2026-11-07 C1：面板上每一个控件，都必须真的能改。
+// 面板上每一个控件，都必须真的能改。
 // 原来只验「GET 里有这个键」—— 存在 ≠ 可写。proactivePerHour / proactiveCooldownMin
 // 就是这样在 ALLOWED_KEYS 外面挂了两个版本：保存回 200、值原地不动、面板还提示「已保存」。
 test('面板上每个配置控件 POST 之后都能读回同一个值', async () => {
