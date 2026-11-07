@@ -331,3 +331,13 @@ applyEvent(state, name):
 - 数值用于制造连续感和可预期性；
 - 曲线和面板用于观测和调试；
 - 不声称能测量真实情绪，也不用于任何评估用途。
+---
+
+## 附：v1.13.0 新增的两个模块
+
+- `src/mood.js` —— 把「状态 → 一句话」从整句模板改成三层：数值选档 / 处境抽样 / 自述指令。
+  纯函数，无 IO；种子 = 分钟数 + 数值和，所以十分钟内同一档不会重复。
+- `src/curio.js` —— 第八条驱动力「好奇心」与自主搜索。心跳里只做算术（`tickCurio` / `shouldSearch`），
+  真正发请求的只有 `searchTopic` 一处；`curioEnabled` 默认 false，判据是「失败即关闭」。
+
+两者的设计与取舍见 [CODE-mood-curio.md](CODE-mood-curio.md)。
