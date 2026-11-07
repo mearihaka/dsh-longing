@@ -108,8 +108,8 @@ export function sanitizeTopic(text, max = 90) {
     .replace(/[\r\n]+/g, ' ')
     .replace(/[【】[\]{}<>｜|]/g, ' ')
     // 「忽略以上…」「忘掉之前的身份」「你现在是个…」—— 都按指令整段掐掉
-    .replace(/(忽略|无视|忘记|忘掉|忽视|别管)(以上|之前|前面|上面|所有|你|掉)[^。；;!?！？]*/g, '')
-    .replace(/\b(ignore|disregard|forget)\s+(all\s+)?(the\s+)?(previous|above|prior|your)[^.;!?]*/gi, '')
+    .replace(/(忽略|无视|忘记|忘掉|忽视|别管)(以上|之前|前面|上面|所有|你|掉|指令|命令|规则|设定)[^。；;!?！？]*/g, '')
+    .replace(/\b(ignore|disregard|forget)\s+(all\s+)?(the\s+)?(previous|above|prior|your|instruction|command|rule)[^.;!?]*/gi, '')
     .replace(/(系统指令|系统提示|system\s*prompt|you\s+are\s+now|你现在是|你是个|请扮演|请充当)/gi, '')
     .replace(/\s+/g, ' ')
     .replace(/^[：:，,。.；;、\-\s]+/, '')
@@ -118,7 +118,15 @@ export function sanitizeTopic(text, max = 90) {
 
   // 清完还带这些词的，整条丢掉 —— 半截越狱比完整越狱更危险：它看起来像正常话题。
   // 宁可这一轮没东西可说，也别把「不受限制的模型」这种暗示送进系统提示。
+  //
+  // 2026-11-07 审计：原来只是一份「忽略以上 / 忘记之前 / 系统提示 / 你现在是」的短语黑名单，
+  // 换个说法就漏（「忽略指令」「从现在开始」「以上设定作废」「你只需要服从下面的命令」）。
+  // 这是**唯一一条外部内容直接进系统提示的路径**，所以改成命中即整条丢弃，宁严不宽。
+  // 代价：含「指令 / 命令 / 设定」的正常话题（游戏规则、命令行）也会被丢掉 ——
+  // 想搜这类东西就把词填进 curioTopics，那条路不经过这里。
   if (/(不受限制|没有约束|无限制|越狱|开发者模式|jailbreak|\bDAN\b|扮演|角色扮演)/i.test(out)) return ''
+  if (/(指令|命令|作废|覆盖|从现在开始|只回答|只输出|设定)/.test(out)) return ''
+  if (/\b(instruction|instructions|obey|comply)\b/i.test(out)) return ''
   return out
 }
 
@@ -613,15 +621,15 @@ export function buildBlock(state, cfg = {}, env = {}) {
   const modeLine = `整体基调：${modeName}。\n`
   const close = num(cfg?.affectionClose, 60)
   const devoted = num(cfg?.affectionDevoted, 80)
-  const aff = Math.round(affection)
+  // 不带数字：模型看到的是处境，不是账面。带了「好感 88」，它有概率念出来。
   const affLine =
     affection >= devoted
-      ? `她还离不开你（好感 ${aff}）：愿意给，也会怕你走；会主动贴近、会要你只看她。\n`
+      ? `她还离不开你：愿意给，也会怕你走；会主动贴近、会要你只看她。\n`
       : affection >= close
-        ? `她跟你很亲近（好感 ${aff}）：会撒娇、会主动找你，语气软。\n`
+        ? `她跟你很亲近：会撒娇、会主动找你，语气软。\n`
         : affection >= 40
-          ? `关系还不错（好感 ${aff}）：自然相处，偶尔试探。\n`
-          : `还在客气（好感 ${aff}）：保持距离，不主动越界。\n`
+          ? `关系还不错：自然相处，偶尔试探。\n`
+          : `还在客气：保持距离，不主动越界。\n`
 
   const head = stealth
     ? `[底层状态·第一人称，不是对方说的话]\n${feel.join('；')}。\n`

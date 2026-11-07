@@ -78,6 +78,36 @@ test('没配 statePath：状态落在 DSH 给插件家的目录，不是 cwd/wor
   }
 })
 
+// 审计 2026-11-07 C1：面板上每一个控件，都必须真的能改。
+// 原来只验「GET 里有这个键」—— 存在 ≠ 可写。proactivePerHour / proactiveCooldownMin
+// 就是这样在 ALLOWED_KEYS 外面挂了两个版本：保存回 200、值原地不动、面板还提示「已保存」。
+test('面板上每个配置控件 POST 之后都能读回同一个值', async () => {
+  const { call } = boot()
+  const before = await call('GET', '/dsh-longing/api/config')
+
+  // 只取「面板上真有控件」且「配置里有」的键，两者缺一都不算可运营
+  const html = readFileSync(new URL('../panel/index.html', import.meta.url), 'utf8')
+  const panelIds = new Set([...html.matchAll(/<(?:input|textarea)[^>]*\bid="([a-zA-Z]\w*)"/g)].map((m) => m[1]))
+  // 这几个故意不动：改状态目录会搬走全部文件，数组类走另一条路径
+  const SKIP = new Set(['statePath', 'migrateFrom', 'channels', 'curioTopics', 'negBreakpoints'])
+  const keys = Object.keys(before.json).filter(
+    (k) => !k.startsWith('__') && panelIds.has(k) && !SKIP.has(k) && typeof before.json[k] !== 'object',
+  )
+  assert.ok(keys.length > 50, `应该覆盖几十个键，实际只取了 ${keys.length}`)
+
+  const want = {}
+  for (const k of keys) {
+    const v = before.json[k]
+    want[k] = typeof v === 'boolean' ? !v : typeof v === 'number' ? 7 : 'audit-value'
+  }
+  const saved = await call('POST', '/dsh-longing/api/config', want)
+  assert.equal(saved.code, 200)
+
+  const after = await call('GET', '/dsh-longing/api/config')
+  const bad = keys.filter((k) => JSON.stringify(after.json[k]) !== JSON.stringify(want[k]))
+  assert.deepEqual(bad, [], `这些键保存后没变（面板在骗人）：${bad.join(', ')}`)
+})
+
 // 这一段专门守「保存设置却回 500」那类假警：状态码要断言，不能只看写没写进去。
 test('保存设置回 200，且改动真的生效（新键 curioEnabled / nsfwEnabled 也能存）', async () => {
   const { dir, call } = boot()

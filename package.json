@@ -1,6 +1,6 @@
 {
   "name": "dsh-longing",
-  "version": "1.13.0",
+  "version": "1.13.1",
   "description": "Longing (暗涌): 会流动的欲望状态 —— 七维数值互相牵制、向上限收敛、被一句话推动；带网页面板、心情日记和第一人称注入块，可接入任意聊天通道。",
   "type": "module",
   "main": "./src/index.js",

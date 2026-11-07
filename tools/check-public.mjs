@@ -67,7 +67,8 @@ function trackedFiles() {
   }
 }
 
-const files = (all ? walk(ROOT) : trackedFiles()).filter((f) => !/\.(jpg|jpeg|png|gif|webp|zip|bundle|woff2?)$/i.test(f))
+const textFiles = (all ? walk(ROOT) : trackedFiles()).filter((f) => !/\.(jpg|jpeg|png|gif|webp|zip|bundle|woff2?)$/i.test(f))
+const imageFiles = (all ? walk(ROOT) : trackedFiles()).filter((f) => /\.(jpe?g|png|webp)$/i.test(f))
 const rules = [...RULES]
 if (extraFile && existsSync(extraFile)) {
   const lines = readFileSync(extraFile, 'utf8').split(/\r?\n/).map((s) => s.trim()).filter((s) => s && !s.startsWith('#'))
@@ -81,16 +82,24 @@ if (extraFile && existsSync(extraFile)) {
 }
 
 let hits = 0
-// 路径级检查：私有镜像目录根本不该被跟踪 / 被打包，跟内容无关。
-for (const file of files) {
-  const rel = relative(ROOT, file).replace(/\\/g, '/')
-  if (/(^|\/)patches\//.test(rel)) {
-    console.log(`✗ 私有镜像目录被跟踪  ${rel}`)
-    hits++
+// 路径级检查：私有镜像目录不该被跟踪，也不该被打进发布包。
+// --all 时它一定物理存在（就在仓库目录里），那不是错误，只提示，不算命中 ——
+// 否则这个模式在本机永远 exit 1，等于把提示音关掉的烟雾报警器。
+const mirror = textFiles
+  .map((f) => relative(ROOT, f).replace(/\\/g, '/'))
+  .filter((rel) => /(^|\/)patches\//.test(rel))
+if (mirror.length) {
+  if (all) {
+    console.log(`· 私有镜像 ${mirror.length} 个文件：物理存在、已 gitignore、不会被跟踪 —— 别 git add -f，打包时排除 patches/`)
+  } else {
+    for (const rel of mirror) {
+      console.log(`✗ 私有镜像目录被跟踪  ${rel}`)
+      hits++
+    }
   }
 }
 
-for (const file of files) {
+for (const file of textFiles) {
   let text
   try {
     text = readFileSync(file, 'utf8')
@@ -110,5 +119,26 @@ for (const file of files) {
   }
 }
 
-console.log(hits === 0 ? `✓ ${files.length} 个文件，0 命中` : `\n共 ${hits} 处命中 —— 别提交，先把它们换掉或加进 .gitignore`)
+// 图片是文本扫描的盲区：EXIF / XMP 里可能带作者名、本机路径、软件序列号。
+// 不解析格式，只找标记段和几类明文 —— 够用了，真出问题也是这些地方。
+for (const file of imageFiles) {
+  let buf
+  try {
+    buf = readFileSync(file)
+  } catch {
+    continue
+  }
+  const ascii = buf.toString('latin1')
+  const problems = []
+  if (ascii.includes('Exif')) problems.push('EXIF 段')
+  if (/http:\/\/ns\.adobe\.com\/xap/.test(ascii)) problems.push('XMP 段')
+  if (/[A-Za-z]:[\\/]{1,2}Users[\\/]{1,2}[A-Za-z0-9_.-]+/.test(ascii)) problems.push('本机路径')
+  if (/\b(USERNAME|harness-workspace)\b/.test(ascii)) problems.push('本机用户名')
+  if (problems.length) {
+    console.log(`✗ 图片元数据  ${relative(ROOT, file)}  含 ${problems.join(' / ')}`)
+    hits++
+  }
+}
+
+console.log(hits === 0 ? `✓ ${textFiles.length} 个文本 + ${imageFiles.length} 张图片，0 命中` : `\n共 ${hits} 处命中 —— 别提交，先把它们换掉或加进 .gitignore`)
 process.exit(hits === 0 ? 0 : 1)

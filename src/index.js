@@ -52,6 +52,9 @@ const NUM_KEYS = new Set([
   // 2026-11-06：好奇心的参数必须进这份清单，否则面板保存会被 ALLOWED_KEYS 悄悄丢掉 ——
   // 1.11.0 的 proactivePerHour 就是这么「改不动」的，别再犯一次。
   'curioGainPerHour', 'curioDropOnTalk', 'curioSearchAt', 'curioCooldownMin', 'curioPerDay',
+  // 2026-11-07 审计：这两个键当初写了注释却漏进清单 —— 面板保存回 200、值原地不动。
+  // 教训不是「记得加键」，而是「测试只验 GET 里有这个键，没验 POST 能改这个键」。
+  'proactivePerHour', 'proactiveCooldownMin',
 ])
 const BOOL_KEYS = new Set([
   'enabled', 'stealthInjection', 'autoInitiate', 'nsfwEnabled', 'nsfwImages', 'curveEnabled', 'presetsEnabled', 'voiceEnabled',

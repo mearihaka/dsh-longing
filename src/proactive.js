@@ -137,7 +137,7 @@ export function proactiveGate({ cfg = {}, state = {}, now = Date.now() } = {}) {
   // 因为那些管的是「别烦人」和「别烧钱」，跟动机无关。
   const topic = state?.pendingTopic && typeof state.pendingTopic === 'object' ? state.pendingTopic : null
   const topicFresh = topic && now - num(topic.at, 0) < 6 * HOUR
-  const floor = num(cfg?.initiateThreshold, 60)
+  const floor = num(cfg?.initiateThreshold, 45)
   if (lust < floor && !topicFresh) return deny('lowlust')
 
   // 发情档位允许更密：urgeRepeatMin 顶掉 cooldownMin。
@@ -202,7 +202,7 @@ export function imageGate({ cfg = {}, state = {}, now = Date.now() } = {}) {
   const today = dayKey(now)
   const usedToday = log.filter((t) => dayKey(t) === today).length
   const limitToday = Math.max(0, Math.round(num(cfg?.imagesPerDay, 2)))
-  const threshold = num(cfg?.imageThreshold, 140)
+  const threshold = num(cfg?.imageThreshold, 110)
   const score = Math.round(num(state?.lust, 0) + num(state?.lewd, 0))
   const lust = num(state?.lust, 0)
   const lewd = num(state?.lewd, 0)
@@ -245,7 +245,13 @@ export function imageGate({ cfg = {}, state = {}, now = Date.now() } = {}) {
   if (num(state?.pausedUntil, 0) > now) return deny('paused', num(state.pausedUntil, 0))
   // 一次都没聊过就发自拍，比发不出来更不像人。
   if (state?.everContacted !== true) return deny('never')
-  if (limitToday > 0 && usedToday >= limitToday) {
+  if (limitToday <= 0) {
+    // 0 = 一张都不发。以前写成 `limitToday > 0 && …`，于是 0 变成「不限」，
+    // 而且因为不走阈值门，一个调低过 imageThreshold 的人会直接拿到 seduce 档。
+    const d = new Date(now)
+    return deny('daily', new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime())
+  }
+  if (usedToday >= limitToday) {
     const d = new Date(now)
     return deny('daily', new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime())
   }

@@ -7,14 +7,17 @@
  *
  * 三件事：
  *   1. tickCurio —— 涨/落，纯数值，不联网
- *   2. shouldSearch —— 到点了才放行（冷却 / 每日上限 / 时段）
+ *   2. shouldSearch —— 到点了才放行（开关 / 暂停 / 时段 / 冷却 / 每日上限）
  *   3. searchTopic —— 真去搜，抓回来一条，做成 pendingTopic
  *
  * 设计约束：
  *   · 搜索绝不塞进心跳本身，只在「判定要搜」那一步发一次请求
- *   · 单次最多 2 个 query，一天最多 perDay 次
+ *   · 单次最多 2 个 query，一天最多 perDay 次（perDay ≤ 0 = 一次都不搜）
  *   · 拿到的话题不自动说话，只挂起来等下一次主动开口
+ *   · 所有门都是「没读到就关」：配置缺键、解析失败，一律当「不许搜」
  */
+
+import { inWindow, parseWindow } from './curve.js'
 
 /** 好奇心参数默认值。面板上那几个键覆盖它。 */
 export const CURIO_DEFAULTS = {
@@ -37,7 +40,10 @@ const clamp100 = (v) => Math.max(0, Math.min(100, Number(v) || 0))
  * @returns {{curio: number, want: boolean, why: string}}
  */
 export function tickCurio(state, cfg = {}, now = Date.now()) {
-  const on = cfg?.curioEnabled !== false
+  // 与 shouldSearch 同口径：只有显式 true 才算开着。
+  // 原来这里是 `!== false`，于是「没读到配置」被当成开着：网络门虽然还关着，
+  // 但面板上好奇心一路涨到门槛，人看着像是在等一件永远不会发生的事。
+  const on = cfg?.curioEnabled === true
   if (!on) return { curio: num(state?.curio, CURIO_DEFAULTS.curioStart), want: false, why: 'off' }
 
   const gainPerHour = num(cfg?.curioGainPerHour, CURIO_DEFAULTS.curioGainPerHour)
@@ -80,6 +86,16 @@ export function shouldSearch(state, cfg = {}, now = Date.now()) {
   // 暂停 / 时段
   if (num(state?.pausedUntil) > now) return { ok: false, why: 'paused' }
 
+  // 时段：安静时段里不发请求。
+  // 原来这道门根本没有 —— 文件头和 CHANGELOG 都写着「冷却 / 每日 / 时段」，代码里只有三道。
+  // 半夜搜出去的查询词是他睡前说的最后一句，这条比白天任何一次都更该拦。
+  const quiet = parseWindow(cfg?.quietHours)
+  if (quiet && inWindow(quiet, new Date(now))) return { ok: false, why: 'quiet' }
+  const active = parseWindow(cfg?.activeHours)
+  if (active && cfg?.scheduleEnabled !== false && !inWindow(active, new Date(now))) {
+    return { ok: false, why: 'inactive' }
+  }
+
   const cd = num(cfg?.curioCooldownMin, CURIO_DEFAULTS.curioCooldownMin)
   const lastSearch = num(state?.lastSearchAt, 0)
   if (lastSearch && now - lastSearch < cd * 60_000) {
@@ -87,9 +103,12 @@ export function shouldSearch(state, cfg = {}, now = Date.now()) {
   }
 
   // 每日上限：按滚动的 24 小时算，不按自然日（跨零点不该翻倍）
+  // 0 = 一次都不搜。以前写成 `perDay > 0 && …`，于是 0 反而变成「不限」——
+  // 文档三处都写着「0 = 不搜」，一个想关掉联网的人照填，拿到的是每 90 分钟一次、没有日上限。
   const perDay = num(cfg?.curioPerDay, CURIO_DEFAULTS.curioPerDay)
+  if (perDay <= 0) return { ok: false, why: 'daily', next: 0 }
   const log = Array.isArray(state?.searchLog) ? state.searchLog.map(Number).filter((t) => now - t < 86_400_000) : []
-  if (perDay > 0 && log.length >= perDay) {
+  if (log.length >= perDay) {
     return { ok: false, why: 'daily', next: log[0] + 86_400_000 }
   }
 

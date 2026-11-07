@@ -612,7 +612,6 @@ function fillCfg(){
   for (const [k,v] of Object.entries(cfg)){
     if (k === 'channels') continue
     const el = $(k); if (!el) continue
-    if (k === 'ownerIds') { el.value = Array.isArray(v) ? v.join(',') : (v ?? ''); continue }
     // 数组字段在面板上是多行文本（一行一个），不这样写会显示成 a,b
     if (k === 'curioTopics') { el.value = Array.isArray(v) ? v.join('\n') : (v ?? ''); continue }
     if (el.type === 'checkbox') el.checked = !!v
@@ -670,8 +669,6 @@ $('saveCfg').onclick = async ()=>{
     }
     const chBoxes = ['qq','bili','web'].map(c=>$('ch-'+c)).filter(Boolean)
     if (chBoxes.length) patch.channels = ['qq','bili','web'].filter(c=>$('ch-'+c)?.checked)
-    const oi = $('ownerIds')
-    if (oi) patch.ownerIds = String(oi.value || '').split(',').map(s=>s.trim()).filter(Boolean)
     const r = await jpost(API+'/config', patch)
     if (r){ cfg=r; fillCfg(); $('msg2').textContent='设置已保存 '+new Date().toLocaleTimeString(); $('msg2').className='muted ok'; loadMeta() }
     else { $('msg2').textContent='保存失败（看日志）'; $('msg2').className='muted warn' }

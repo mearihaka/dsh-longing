@@ -121,6 +121,6 @@ comfyUp === false ? '图床没开' : nsfwImages ? '调 generate_image' : comfyUp
 ## 怎么自己跑一遍
 
 ```bash
-node --test --test-concurrency=1     # 76 条
-node tools/doctor.mjs --panel http://127.0.0.1:<端口>/dsh-longing   # 25 项体检
+node --test --test-concurrency=1     # 119 条（1.13.1 起）
+node tools/doctor.mjs --panel http://127.0.0.1:<端口>/dsh-longing   # 18 项体检
 ```

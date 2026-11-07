@@ -17,7 +17,7 @@ import { test } from 'node:test'
 
 import { sanitizeTopic, buildBlock } from '../src/prompt.js'
 import { CURIO_DEFAULTS, buildQuery, shouldSearch, tickCurio, toTopic } from '../src/curio.js'
-import { noteInitiate, proactiveGate } from '../src/proactive.js'
+import { imageGate, noteInitiate, proactiveGate } from '../src/proactive.js'
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -57,34 +57,36 @@ test('恶意 pendingTopic 进不了最终注入块', () => {
 })
 
 // ── 二、数值边界 ──
+// 好奇心的门是「显式 true 才开」，所以数值测试也要显式打开，别用空 cfg。
+const ON = { curioEnabled: true }
 test('tickCurio：时钟回拨不会被倒扣也不会暴涨', () => {
   const now = Date.now()
-  const r = tickCurio({ curio: 30, curioAt: now, lastContactAt: now + HOUR }, {}, now)
+  const r = tickCurio({ curio: 30, curioAt: now, lastContactAt: now + HOUR }, ON, now)
   assert.ok(r.curio >= 0 && r.curio <= 31, `回拨后 curio=${r.curio}`)
 })
 
 test('tickCurio：停机一天封顶 100，不溢出', () => {
   const now = Date.now()
-  const r = tickCurio({ curio: 99, curioAt: now - 24 * HOUR, lastContactAt: now - 24 * HOUR }, {}, now)
+  const r = tickCurio({ curio: 99, curioAt: now - 24 * HOUR, lastContactAt: now - 24 * HOUR }, ON, now)
   assert.equal(r.curio, 100)
 })
 
 test('tickCurio：curio 是 NaN 时不炸', () => {
-  const r = tickCurio({ curio: Number.NaN }, {}, Date.now())
+  const r = tickCurio({ curio: Number.NaN }, ON, Date.now())
   assert.ok(Number.isFinite(r.curio) && r.curio >= 0)
 })
 
 test('tickCurio：刚说过话要掉值', () => {
   const now = Date.now()
-  const a = tickCurio({ curio: 50, curioAt: now - MIN, lastContactAt: 0 }, {}, now)
-  const b = tickCurio({ curio: 50, curioAt: now - MIN, lastContactAt: now - MIN }, {}, now)
+  const a = tickCurio({ curio: 50, curioAt: now - MIN, lastContactAt: 0 }, ON, now)
+  const b = tickCurio({ curio: 50, curioAt: now - MIN, lastContactAt: now - MIN }, ON, now)
   assert.ok(b.curio < a.curio, '刚说完话的 curio 应该比没说话的低')
 })
 
 test('tickCurio：curioGainPerHour 名副其实（每小时涨多少就是多少）', () => {
   const now = Date.now()
   // 撇开「刚说过话」的扣除：lastContactAt 设成很久以前
-  const r = tickCurio({ curio: 0, curioAt: now - HOUR, lastContactAt: 0 }, { curioGainPerHour: 14 }, now)
+  const r = tickCurio({ curio: 0, curioAt: now - HOUR, lastContactAt: 0 }, { ...ON, curioGainPerHour: 14 }, now)
   assert.ok(Math.abs(r.curio - 14) < 0.5, `一小时应涨 14，实际 ${r.curio}`)
 })
 
@@ -102,6 +104,41 @@ test('shouldSearch：滚出 24 小时的旧账不占额度', () => {
   const now = Date.now()
   const old = Array(6).fill(now - 25 * HOUR)
   assert.equal(shouldSearch({ searchLog: old }, { curioEnabled: true }, now).ok, true)
+})
+
+// 审计 C2：0 是「一次都不搜」，不是「不限」。
+test('shouldSearch：curioPerDay = 0 就是一次都不搜', () => {
+  const now = Date.now()
+  const cfg = { curioEnabled: true, curioPerDay: 0 }
+  assert.equal(shouldSearch({}, cfg, now).why, 'daily')
+  assert.equal(shouldSearch({ searchLog: [now - MIN, now - MIN] }, cfg, now).why, 'daily')
+  assert.equal(shouldSearch({}, { curioEnabled: true, curioPerDay: 3 }, now).ok, true, '设 3 就还是能搜')
+})
+
+// 审计 C4：tick 与 shouldSearch 同口径，缺键一律当关。
+test('tickCurio：没有这个键也算关，面板不会空涨', () => {
+  const now = Date.now()
+  const tenHours = { curio: 0, curioAt: now - 10 * HOUR, lastContactAt: 0 }
+  for (const cfg of [{}, { curioEnabled: undefined }, { curioEnabled: false }]) {
+    const r = tickCurio(tenHours, cfg, now)
+    assert.equal(r.want, false)
+    assert.equal(r.why, 'off')
+    assert.equal(r.curio, 0, '关着就不该涨')
+  }
+  assert.equal(tickCurio(tenHours, { curioEnabled: true }).want, true, '开着才涨到门槛')
+})
+
+// 审计 C5：安静时段与活跃时段要真的拦。
+test('shouldSearch：安静时段 / 非活跃时段不发请求', () => {
+  const d = new Date()
+  d.setHours(4, 0, 0, 0)
+  const at4 = d.getTime()
+  const cfg = { curioEnabled: true, quietHours: '23:30-08:00' }
+  assert.equal(shouldSearch({}, cfg, at4).why, 'quiet')
+  const day = new Date()
+  day.setHours(15, 0, 0, 0)
+  assert.equal(shouldSearch({}, cfg, day.getTime()).ok, true, '白天照常')
+  assert.equal(shouldSearch({}, { curioEnabled: true, activeHours: '09:00-12:00' }, at4).why, 'inactive')
 })
 
 // ── 三、搜索词 ──
@@ -246,4 +283,34 @@ test('buildBlock：自述指令在每个分支都在（不然退回念稿模式�
     )
     assert.ok(out.includes('先在心里过一遍'), `lust=${l} 缺自述指令`)
   }
+})
+
+// ── 四·补：审计 C3 / C7 —— 0 是「不发」，兜底要和 schema 一致 ──
+test('imageGate：imagesPerDay = 0 就是一张都不发（不是不限）', () => {
+  const now = Date.now()
+  const state = {
+    lust: 95, lewd: 90, possess: 60, shame: 40, resist: 10, fatigue: 10, affection: 80,
+    everContacted: true, lastContactAt: now - 40 * MIN, scene: '卧室',
+  }
+  const base = { autoInitiate: true, nsfwEnabled: true, nsfwImages: true, imageThreshold: 10, quietHours: '' }
+  const off = imageGate({ cfg: { ...base, imagesPerDay: 0 }, state, now })
+  assert.equal(off.allowed, false)
+  assert.equal(off.reason, 'daily')
+  const used = imageGate({ cfg: { ...base, imagesPerDay: 0 }, state: { ...state, imageLog: [now - MIN, now - 2 * MIN] }, now })
+  assert.equal(used.allowed, false, '已经发过也还是不发')
+  const two = imageGate({ cfg: { ...base, imagesPerDay: 2 }, state: { ...state, imageLog: [now - 25 * HOUR, now - 26 * HOUR] }, now })
+  assert.equal(two.allowed, true, '额度 2、昨天的账不算今天')
+})
+
+test('兜底阈值与 schema 一致：没这个键时是 45 / 110，不是 60 / 140', () => {
+  const now = Date.now()
+  const state = {
+    lust: 50, lewd: 30, possess: 40, shame: 50, resist: 60, fatigue: 20, affection: 50,
+    everContacted: true, lastContactAt: now - 40 * MIN,
+  }
+  const g = proactiveGate({ cfg: { autoInitiate: true, idleTriggerMin: 15, cooldownMin: 1 }, state, now })
+  assert.equal(g.reason, 'ok', `lust 50 应该过得了 45 那道门，实际 ${g.reason}`)
+
+  const below = proactiveGate({ cfg: { autoInitiate: true, idleTriggerMin: 15 }, state: { ...state, lust: 30 }, now })
+  assert.equal(below.reason, 'lowlust', 'lust 30 仍然不该开口')
 })
