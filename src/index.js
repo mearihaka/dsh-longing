@@ -238,10 +238,15 @@ export function apply(ctx, configIn) {
   )
   for (const [k, v] of Object.entries(rawPanel)) {
     if (k === PANEL_KEY_MARK || STATE_KEYS.has(k) || !panelKeys.has(k)) continue
+    // 1.12.0 删掉的死键（ownerIds、配置层的 pausedUntil）不能再复活：旧的面板文件里还留着它们，
+    // 不过滤的话每次启动都会把它们写回去，面板上永远清不掉。
+    if (!Object.hasOwn(config ?? {}, k)) continue
     panelOverrides[k] = v
   }
-  const dropped = Object.keys(rawPanel).filter((k) => STATE_KEYS.has(k))
-  if (dropped.length) logger.info?.(`[dsh-longing] 面板配置里清掉状态键：${dropped.join(',')}`)
+  const dropped = Object.keys(rawPanel).filter(
+    (k) => STATE_KEYS.has(k) || (k !== PANEL_KEY_MARK && !Object.hasOwn(config ?? {}, k)),
+  )
+  if (dropped.length) logger.info?.(`[dsh-longing] 面板配置里清掉无效键：${dropped.join(',')}`)
 
   /** 把「插件配置 + 面板改动」合并后写回文件：只读文件的通道插件（dsh-qq 等）也能看到通道/开关。 */
   const flushPanelFile = () => {

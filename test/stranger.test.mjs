@@ -206,3 +206,22 @@ test('调用方只给几个键，也要得到全部默认值', async () => {
   assert.ok('personaName' in cfg.json && 'proactivePerHour' in cfg.json)
   assert.ok(!('lust' in cfg.json) && !('scene' in cfg.json), '状态键不该出现在配置接口里')
 })
+
+// 1.12 删掉 ownerIds 之后：旧版本写下的整份面板快照还带着它（没有 __panelKeys 标记），
+// 而 flushPanelFile 每次启动都会把 panelOverrides 写回文件 —— 不过滤就永远复活、面板上清不掉。
+test('旧面板文件里的死键不再复活', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'longing-legacy-'))
+  const first = boot({ home })
+  assert.ok(existsSync(join(first.dir, '欲望面板配置.json')))
+  const cfgFile = join(first.dir, '欲望面板配置.json')
+  // 1.11 时代的形状：无 __panelKeys，带已删除的 ownerIds
+  writeFileSync(cfgFile, JSON.stringify({ ownerIds: [12345], autoInitiate: true, quietHours: '01:00-06:00' }))
+  const { call } = boot({ home })
+  const cfg = await call('GET', '/dsh-longing/api/config')
+  assert.equal(cfg.json.ownerIds, undefined, '死键还出现在配置接口里')
+  const onDisk = JSON.parse(readFileSync(cfgFile, 'utf8'))
+  assert.equal(onDisk.ownerIds, undefined, '死键被写回文件了')
+  assert.equal(onDisk.autoInitiate, true, '面板真改过的键要保留')
+  assert.equal(onDisk.quietHours, '01:00-06:00')
+  assert.ok(Array.isArray(onDisk.__panelKeys) && onDisk.__panelKeys.includes('autoInitiate'))
+})
