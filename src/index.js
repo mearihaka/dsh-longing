@@ -6,6 +6,9 @@ import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ConfigSchema } from './config.js'
 import { addThought, formatDay, pruneDiary, recentDiary, recordEvent } from './diary.js'
+// 2026-11-08：日记改由她自写（当天事件 + 七维状态 → 模型 → 一两句第一人称）。
+// 旧的 thoughts 只能靠外层模型主动调工具写，实测永远是空的（见 reflect.js 头注释）。
+import { REFLECT_DEFAULTS, buildReflectPrompt, extractThoughts, recentThoughtTexts, shouldReflect } from './reflect.js'
 import { EVENTS, applyEvent, recentEvents } from './events.js'
 import { buildBlock, modeOf } from './prompt.js'
 import { imageGate, noteImage, noteInitiate, proactiveGate } from './proactive.js'
@@ -49,6 +52,8 @@ const NUM_KEYS = new Set([
   'cooldownMin', 'resistWeight', 'affectionWeight', 'coldLust', 'shyLewd', 'distantPossess', 'numbAffection',
   'explicitThreshold', 'imageThreshold', 'imagesPerDay', 'jealousy', 'rejectionPenalty',
   'comfyProbeSec', 'interactionLust', 'couplingRate', 'eventGain', 'lonelyHours', 'diaryDays',
+  // 1.14.0：自写日记的旋钮。同样必须进清单 —— 不进来就是「面板能填、值原地不动」。
+  'diaryPerDay', 'diaryMinGapMin', 'diaryMinEvents', 'diaryMaxChars', 'diaryMaxTokens', 'diaryTemperature',
   // 2026-11-06：好奇心的参数必须进这份清单，否则面板保存会被 ALLOWED_KEYS 悄悄丢掉 ——
   // 1.11.0 的 proactivePerHour 就是这么「改不动」的，别再犯一次。
   'curioGainPerHour', 'curioDropOnTalk', 'curioSearchAt', 'curioCooldownMin', 'curioPerDay',
@@ -61,12 +66,14 @@ const BOOL_KEYS = new Set([
   'memoryEnabled', 'scheduleEnabled', 'pauseEnabled', 'rememberAfterward', 'ownerOnly', 'comfyEnabled', 'comfyAutoLaunch',
   'couplingEnabled', 'debugMode', 'feedbackThink', 'feedbackHint', 'feedbackSpeak', 'feedbackAct', 'unlocksEnabled',
   'curioEnabled',
+  'diaryAutoWrite',
 ])
 const STR_KEYS = new Set([
   'channels', 'peakWindow', 'activeHours', 'quietHours', 'sleepWindow', 'pauseWord', 'personaNote',
   'comfyBaseUrl', 'comfyLaunchScript', 'comfyLaunchAllowDir', 'statePath', 'migrateFrom', 'negBreakpoints',
   'personaName', 'toolName',
   'curioTopics',
+  'diaryProvider', 'diaryModel', 'diaryPersona',
 ])
 // 面板能写的键：写死是为了防止任意键落盘。状态键刻意不在里面。
 const ALLOWED_KEYS = new Set([...NUM_KEYS, ...BOOL_KEYS, ...STR_KEYS])
@@ -394,6 +401,103 @@ export function apply(ctx, configIn) {
   // 首启就把日记文件落下来：面板那张卡、README 里的文件表都默认它存在，
   // 等第一条事件才出现的话，别人会以为日记功能没装好。
   if (!existsSync(diaryFile)) saveDiary()
+
+  // ── 自写日记：把当天的事 + 此刻的状态交给 llm，取回一两句她自己的话 ──
+  // 三条边界：①没东西可写就不写（宁可空着也不编）②失败静默（模型不在/报错时模板继续兜底）
+  // ③只写不推（写完不主动发消息）。额度与间隔由 shouldReflect 判。
+  let reflecting = false
+  let lastReflectAt = 0
+  let lastReflectWhy = 'idle'
+
+  // llm 是可选依赖：没装适配器、没配模型时返回 null，插件照常跑。
+  const reflectCaller = () => {
+    try {
+      const llm = ctx?.get?.('llm')
+      if (!llm?.stream) return null
+      const sel = ctx?.get?.('agentDefaultModel')?.currentSelection?.() ?? {}
+      const cfg = settings() ?? {}
+      const provider = String(cfg.diaryProvider ?? '').trim() || String(sel.provider ?? '').trim()
+      const model = String(cfg.diaryModel ?? '').trim() || String(sel.model ?? '').trim()
+      if (!provider || !model) return null
+      return { llm, provider, model }
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 写一条日记。force=true 时跳过额度/间隔判断（面板按钮、工具 action=reflect 用）。
+   * @returns {Promise<{ok: boolean, why: string, lines?: string[], day?: object}>}
+   */
+  const reflectNow = async ({ force = false, signal } = {}) => {
+    if (reflecting) return { ok: false, why: 'busy' }
+    const cfg = settings() ?? {}
+    const gate = shouldReflect({ diary, state, cfg, now: Date.now() })
+    if (!gate.ok && !force) {
+      lastReflectWhy = gate.why
+      return gate
+    }
+    if (gate.why === 'off' && !force) {
+      lastReflectWhy = 'off'
+      return gate
+    }
+    const caller = reflectCaller()
+    if (!caller) {
+      lastReflectWhy = 'no-model'
+      return { ok: false, why: 'no-model' }
+    }
+    reflecting = true
+    let raw = ''
+    try {
+      const day = recentDiary(diary, 1)[0]
+      const prompt = buildReflectPrompt({
+        day,
+        dims: state,
+        previous: recentThoughtTexts(day, 3),
+        persona: String(cfg.diaryPersona ?? '').trim() || String(cfg.personaName ?? '').trim(),
+        now: Date.now(),
+      })
+      const stream = caller.llm.stream({
+        provider: caller.provider,
+        model: caller.model,
+        system: prompt.system,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt.user }] }],
+        maxTokens: Math.round(num(cfg.diaryMaxTokens, REFLECT_DEFAULTS.diaryMaxTokens)),
+        temperature: num(cfg.diaryTemperature, REFLECT_DEFAULTS.diaryTemperature),
+        signal,
+      })
+      for await (const chunk of stream) {
+        // 两种字段名都认：d.ts 写的是 text，运行时这一版给的是 textDelta
+        const piece = chunk?.textDelta ?? chunk?.text
+        if (chunk?.type === 'text-delta' && typeof piece === 'string') raw += piece
+        else if (chunk?.type === 'finish' && chunk?.reason?.kind === 'error') break
+      }
+    } catch (e) {
+      lastReflectWhy = 'error'
+      logger.warn?.(`[dsh-longing] 日记没写出来：${e?.message ?? e}`)
+      return { ok: false, why: 'error' }
+    } finally {
+      reflecting = false
+    }
+    const lines = extractThoughts(raw, {
+      maxChars: Math.round(num(cfg.diaryMaxChars, REFLECT_DEFAULTS.diaryMaxChars)),
+      maxCount: 2,
+    })
+    if (!lines.length) {
+      lastReflectWhy = 'empty'
+      return { ok: false, why: 'empty' }
+    }
+    for (const line of lines) diary = addThought(diary, line, Date.now())
+    saveDiary()
+    lastReflectAt = Date.now()
+    lastReflectWhy = 'wrote'
+    logger.info?.(`[dsh-longing] 日记：${lines.join(' / ')}`)
+    return { ok: true, why: 'wrote', lines, day: recentDiary(diary, 1)[0] }
+  }
+  // 同进程零 IO 的入口（别的插件 / 脚本直接调）
+  try {
+    globalThis.__dshLongingReflect = reflectNow
+  } catch {}
 
   // ── 生图后端：探测 + 可选自动拉起（失败只降级，不影响聊天）──
   // known=false 表示「没探测过」：这时注入里不许出现任何生图判断句，
@@ -750,6 +854,9 @@ export function apply(ctx, configIn) {
     writeJson(stateFile, snapState(), logger)
     refreshBlock()
 
+    // 日记：每轮只判断一次「要不要写」，真要写才发一个模型请求（失败静默，不影响心跳）
+    void reflectNow().catch(() => {})
+
     history.push({
       t: state.updatedAt,
       l: Math.round(state.lust),
@@ -928,6 +1035,14 @@ export function apply(ctx, configIn) {
           }
           return json(res, statePayload())
         }
+        if (url.startsWith('/dsh-longing/api/diary/reflect')) {
+          // 手动写一条（面板「让她写一篇」按钮）。POST 才写，GET 只报状态。
+          if (req.method === 'POST') {
+            const r = await reflectNow({ force: true })
+            return json(res, { ...r, why: r?.why ?? 'unknown', lastWhy: lastReflectWhy })
+          }
+          return json(res, { lastWhy: lastReflectWhy, lastAt: lastReflectAt })
+        }
         if (url.startsWith('/dsh-longing/api/diary')) {
           if (req.method === 'POST') {
             const p = await body(req)
@@ -1086,7 +1201,9 @@ export function apply(ctx, configIn) {
           'action=get 查看。' +
           'action=events 列出所有「事件」（夸奖/被拒/提别人/说狠话…），action=event 配 name 把刚才发生的事记进数值：' +
           '他说了什么、做了什么，就用对应事件登记一次，数值和她的语气会跟着变。' +
-          'action=diary 读她最近几天的「心情日记」（高兴的、难受的、心里想的），action=thought 配 text 记一句她的心里话。' +
+          'action=diary 读她最近几天的「心情日记」（高兴的、难受的、心里想的）。' +
+          'action=reflect 让她现在就自己写一条日记（用当天的事和此刻的状态，由她自己写，不是你替她写）；' +
+          'action=thought 配 text 是你替她记一句心里话，平时不用，除非她当面说了什么值得留的。' +
           '日记她不会主动说出来，只有主人问才给——主人问「你今天在想什么」「看看日记」时就调这个。' +
           'action=set/bump/preset 直接改值，只在调试模式打开时可用；平时数值靠聊天里发生的事慢慢养。' +
           '改值需要主人在私聊里先解锁管理员模式（由通道插件登记主人会话）。',
@@ -1131,6 +1248,20 @@ export function apply(ctx, configIn) {
             const days = Math.max(1, Math.min(30, num(args?.minutes, num(settings()?.diaryDays, 1))))
             const list = recentDiary(diary, days)
             return { ok: true, text: list.length ? list.map(formatDay).join('\n\n') : '还没有记录。' }
+          }
+          if (action === 'reflect') {
+            const r = await reflectNow({ force: true })
+            if (!r?.ok) {
+              const why = {
+                'no-model': '没有可用的模型：先在 DSH 里配一个模型，或填 diaryProvider / diaryModel',
+                off: 'diaryAutoWrite 是关着的',
+                busy: '她正在写，等这条写完',
+                empty: '写出来是空的（或者被清洗掉了），这次不留',
+                error: '写的时候出错了，日记保持原样',
+              }[r?.why] ?? `没写成：${r?.why ?? 'unknown'}`
+              return { ok: false, text: why }
+            }
+            return { ok: true, text: `写下了：「${r.lines.join('」「')}」` }
           }
           if (action === 'thought') {
             const t = String(args?.text ?? '').trim()

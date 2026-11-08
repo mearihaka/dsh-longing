@@ -115,9 +115,11 @@
     <div class="bar" style="margin-top:14px">
       <input type="text" id="diaryInput" placeholder="帮她记一句心里话…" style="flex:1" />
       <button id="diarySave" class="ghost">记下</button>
+      <button id="diaryReflect" class="ghost" title="让她用今天的事和此刻的状态自己写一条">让她现在写一篇</button>
       <span id="diaryMsg" class="muted"></span>
     </div>
-    <p class="muted">事件会自动归到「高兴 / 难受」，内心想法由她自己写（聊天里让她写，或在这里补）。只写不推，想看才看。</p>
+    <p class="muted">事件会自动归到「高兴 / 难受」；「心里想的」由她自己写（v1.14.0 起：到点自动写，也可以点上面的按钮让她现在写）。
+      只写不推，想看才看。</p>
   </div>
 
   <div class="card" id="eventCard">
@@ -648,6 +650,31 @@ $('diarySave').onclick = async () => {
   $('diaryMsg').textContent = r && r.ok ? '记下了' : '没记上'
   $('diaryMsg').className = 'muted ' + (r && r.ok ? 'ok' : 'warn')
   if (r && r.ok) { $('diaryInput').value = ''; loadDiary() }
+}
+
+$('diaryReflect').onclick = async () => {
+  const btn = $('diaryReflect')
+  btn.disabled = true
+  $('diaryMsg').textContent = '她正在写…'
+  $('diaryMsg').className = 'muted'
+  try {
+    const r = await jpost(API+'/diary/reflect', {})
+    const why = {
+      'no-model': '没有可用模型：先在 DSH 里配一个，或填 diaryProvider / diaryModel',
+      off: '自写日记是关着的（diaryAutoWrite）',
+      busy: '她正在写，等这条写完',
+      empty: '写出来是空的，这次不留',
+      error: '写的时候出错了，日记没变',
+    }
+    const ok = !!(r && r.ok)
+    $('diaryMsg').textContent = ok
+      ? '写下了：' + ((r.lines || []).join(' / '))
+      : (why[r && r.why] || ('没写成：' + ((r && r.why) || 'unknown')))
+    $('diaryMsg').className = 'muted ' + (ok ? 'ok' : 'warn')
+    if (ok) loadDiary()
+  } finally {
+    btn.disabled = false
+  }
 }
 
 $('saveCfg').onclick = async ()=>{

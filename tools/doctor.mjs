@@ -34,7 +34,7 @@ const read = (p) => {
 const exists = (p) => existsSync(p)
 
 // ── 1. dsh-longing 本体 ──
-for (const f of ['index.js', 'prompt.js', 'curve.js', 'events.js', 'diary.js', 'unlock.js', 'config.js', 'mood.js', 'curio.js', 'proactive.js']) {
+for (const f of ['index.js', 'prompt.js', 'curve.js', 'events.js', 'diary.js', 'reflect.js', 'unlock.js', 'config.js', 'mood.js', 'curio.js', 'proactive.js']) {
   if (exists(join(SELF, f))) ok(`longing/src/${f}`)
   else bad(`longing/src/${f}`, '缺文件')
 }
@@ -61,6 +61,22 @@ if (!QQ) {
     ['qq: shared/trim.js 存在', exists(join(QQ, 'shared', 'trim.js'))],
   ]
   for (const [name, pass] of patches) pass ? ok(name) : bad(name, '补丁丢了，见 patches/dsh-qq/README.md')
+}
+
+// ── 2.5 自写日记（1.14.0）──
+// 这一项看的是「装上了但写不出来」：diaryAutoWrite 开着却没有模型可用时，
+// 面板上日记那栏会一直是模板，人只会以为功能没做。
+{
+  const diaryPath = join(WS, '心情日记.json')
+  let days = {}
+  try {
+    days = JSON.parse(read(diaryPath) || '{}')?.days ?? {}
+  } catch {}
+  const today = new Date()
+  const key = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+  const day = days[key]
+  const written = Array.isArray(day?.thoughts) ? day.thoughts.length : 0
+  ok('自写日记', day ? `今天写过 ${written} 条${written ? '：' + String(day.thoughts[written - 1]?.text ?? '').slice(0, 24) : ''}` : '今天还没有记录')
 }
 
 // ── 3. 注入文件新鲜度 ──

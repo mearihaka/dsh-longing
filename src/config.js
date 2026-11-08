@@ -131,6 +131,21 @@ export const ConfigSchema = Schema.object({
     .default('23:30-08:00')
     .description('睡眠时段：这段时间的沉默不算冷落，也不会在她睡着时扣好感'),
   diaryDays: Schema.number().min(1).max(30).default(7).description('面板默认显示最近几天的日记'),
+  // ── 自写日记（1.14.0）──
+  // 为什么要这些：日记原来只有「让我高兴的 / 让我难受的」两行模板，
+  // 内心那栏要等外层模型想起调工具才会有一条 —— 实际永远是空的。
+  diaryAutoWrite: Schema.boolean()
+    .default(true)
+    .description('让她自己写心情日记：把当天发生的事和此刻的状态交给模型，写一两句第一人称的话；关掉就只剩两行模板'),
+  diaryPerDay: Schema.number().min(1).max(12).default(3).description('一天最多自己写几条'),
+  diaryMinGapMin: Schema.number().min(0).max(720).default(150).description('两条之间至少隔多少分钟（防止翻来覆去写同一件事）'),
+  diaryMinEvents: Schema.number().min(0).max(50).default(2).description('当天至少发生几件事才值得写；0 = 每天都写'),
+  diaryMaxChars: Schema.number().min(20).max(300).default(120).description('一条日记最多多少字'),
+  diaryMaxTokens: Schema.number().min(60).max(1200).default(260).description('写日记时给模型的最大输出 token'),
+  diaryTemperature: Schema.number().min(0).max(2).default(0.95).description('写日记的温度：高一点更像人话，低一点更稳'),
+  diaryProvider: Schema.string().default('').description('写日记用的 provider（留空 = 用 DSH 当前默认模型）'),
+  diaryModel: Schema.string().default('').description('写日记用的 model（留空 = 用 DSH 当前默认模型）'),
+  diaryPersona: Schema.string().default('').description('写日记时告诉模型「你是谁」；留空则用 personaName'),
 
   // ── 渐进解锁 ──
   unlocksEnabled: Schema.boolean()

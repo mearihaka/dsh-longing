@@ -251,9 +251,9 @@ test('调用方只给几个键，也要得到全部默认值', async () => {
   const { call } = boot() // boot 只传了 comfyEnabled / peakWindow
   const cfg = await call('GET', '/dsh-longing/api/config')
   const keys = Object.keys(cfg.json ?? {}).filter((k) => !k.startsWith('__'))
-  // schema 共 92 项（1.13.0 加 7 个 curio*，11-07 加 nsfwEnabled），其中 8 项是「七维 + scene 的初始值」，
-  // 属状态、API 不返回 → 84
-  assert.equal(keys.length, 84, `实际 ${keys.length} 项`)
+  // schema 共 102 项（1.13.0 加 7 个 curio*，11-07 加 nsfwEnabled，11-08 加 10 个 diary*），
+  // 其中 8 项是「七维 + scene 的初始值」，属状态、API 不返回 → 94
+  assert.equal(keys.length, 94, `实际 ${keys.length} 项`)
   assert.ok('personaName' in cfg.json && 'proactivePerHour' in cfg.json)
   assert.ok(!('lust' in cfg.json) && !('scene' in cfg.json), '状态键不该出现在配置接口里')
 })

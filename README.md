@@ -233,11 +233,11 @@ node --test --test-concurrency=1
     debugMode: true                               # 想直接拖滑块改数值时
 ```
 
-### 7.3 配置项总表（schema 92 项；`GET /api/config` 返回 84 项）
+### 7.3 配置项总表（schema 102 项；`GET /api/config` 返回 94 项）
 
-下面 92 项是 `src/config.js` 里声明的全部配置。其中 8 项（`lust / lewd / possess / shame / resist /
+下面 102 项是 `src/config.js` 里声明的全部配置。其中 8 项（`lust / lewd / possess / shame / resist /
 fatigue / affection / scene`）是**初始数值**，属状态、面板和 API 都不返回（见 4.4），所以
-`GET /api/config` 实际回 84 项。
+`GET /api/config` 实际回 94 项。
 
 | 键 | 默认 | 说明 |
 |---|---|---|
@@ -288,6 +288,16 @@ fatigue / affection / scene`）是**初始数值**，属状态、面板和 API �
 | `lonelyHours` | 6 | 多久没消息算「被晾着」（只算清醒时段） |
 | `sleepWindow` | "23:30-08:00" | 睡眠时段：不算冷落、不扣好感 |
 | `diaryDays` | 7 | 面板默认显示几天日记 |
+| `diaryAutoWrite` | true | 让她自己写「心里想的」那栏；关掉 = 只剩两栏模板（v1.14.0） |
+| `diaryPerDay` | 3 | 一天最多自己写几条（v1.14.0） |
+| `diaryMinGapMin` | 150 | 两条之间至少隔多少分钟（v1.14.0） |
+| `diaryMinEvents` | 2 | 当天至少几件事才值得写；0 = 每天都写（v1.14.0） |
+| `diaryMaxChars` | 120 | 一条最多多少字（v1.14.0） |
+| `diaryMaxTokens` | 260 | 写日记时给模型的最大输出 token（v1.14.0） |
+| `diaryTemperature` | 0.95 | 写日记的温度（v1.14.0） |
+| `diaryProvider` | "" | 写日记用哪个 provider；留空 = DSH 当前默认（v1.14.0） |
+| `diaryModel` | "" | 写日记用哪个 model；留空 = DSH 当前默认（v1.14.0） |
+| `diaryPersona` | "" | 写日记时告诉模型「你是谁」；留空则用 personaName（v1.14.0） |
 | `unlocksEnabled` | true | 按好感/羞耻/色情逐步解锁亲密程度 |
 | `coldLust` / `shyLewd` / `distantPossess` / `numbAffection` | 25 / 30 / 30 / 30 | 各维「冷」的地板 |
 | `initiateThreshold` | 45 | 低于这个性欲值她不会主动开口 |
@@ -532,10 +542,35 @@ rm <profile目录>/node_modules/dsh-longing
 | 探测 `comfyBaseUrl`（本机回环） | 开了 `comfyEnabled` 时按 `comfyProbeSec` 探一次 | 只探本机地址 |
 | 好奇心搜索：`https://cn.bing.com/search?q=…` | 只有 `curioEnabled: true` 且攒够好奇心、过了冷却与每日上限才会发一次 | **`curioEnabled` 默认 false = 一次都不发** |
 
+日记自写（v1.14.0）是第三条出口，但它走的是 DSH 自己的模型通道（`ctx.llm`），
+不是插件直接发请求：一次一条、`diaryMaxTokens` 封顶（默认 260），
+`diaryPerDay` / `diaryMinGapMin` / `diaryMinEvents` 三道门挡在前面。
+不想要这条出口有两条路：`diaryAutoWrite: false`（只留模板），或者干脆不配模型。
+
 好奇心那一处的查询词由**最近的对话内容**生成（技术词优先，撒娇词与名字会被剔掉，剔不动就退回
 `curioTopics` 或通用词），一次最多 2 个 query、每天最多 `curioPerDay` 次（默认 6，约 2000~4000 token/次）。
 关掉的方式有三种，任选：`curioEnabled: false`、`curioPerDay: 0`、或面板「好奇心」卡上的开关。
 搜到的只是一条标题，挂在状态下等下次主动开口时讲；**搜不到就什么都不发生**，不会报错也不会卡住注入。
+
+**和 DSH 版本的兼容性（实测，不是「应该可以」）**
+
+`package.json` 里写的是 `engines.dsh >= 0.2.0`、`@deepseek-ai/cordis >= 4.0.1`、`@deepseek-ai/schemastery >= 3.18.1`。
+下面是实际跑过的记录：
+
+| DSH | Node | cordis | schemastery | 结果 | 日期 |
+|---|---|---|---|---|---|
+| `0.2.1-rc.3` | v24.21.0（DSH 自带） | 4.0.5 | 3.18.5 | 面板 200、注入正常、单测 154/154 全过 | 2026-11-08 |
+
+同一份代码（差别只有 `curioEnabled` 的默认值）挂着跑的那台就是这个版本，所以「能装」不是推断，
+是从在跑的进程里量出来的（`GET /dsh-longing/` → 200）。
+
+三点提醒：
+
+1. **`0.2.1-rc.3` 是候选版。** `engines.dsh` 只写了下限、没写上界，将来 DSH 0.3 改了面板或 HTTP 的契约，
+   这个包也会照装不误 —— 那时候必须重跑 `node --test` 和 `node tools/doctor.mjs` 才能确认没断。
+2. **装完要重启 DSH。** 插件是启动时按 `dsh.bundle.patch` 挂进配置树的，热挂不生效。
+   重启后 `欲望注入.txt` 的 mtime 应该在 10 分钟内（见 6.5）。
+3. **`GET /dsh-longing/api/config` 返回 401 是正常的** —— 面板接口要 `x-desire-token`（读 `<状态目录>/面板令牌.txt`）。
 
 **平台**
 
@@ -718,29 +753,54 @@ Windows 上验证过；路径全部走 `node:path` / `fileURLToPath`，Linux / m
 
 关掉高档时**往下退一档表现**，不是突然沉默 —— 到了「上手」档但那一档关着，她就按「开口要」的样子来。这样不会出现「数值很高但人像断线」。
 
-### 心情日记：只写，不推（v1.3.0）
+### 心情日记：她自己写（v1.3.0 起只写不推；v1.14.0 起自写）
 
 `心情日记.json`，最近 30 天。每天三栏：
 
-- **让我高兴的** / **让我难受的**：事件自动归类（夸奖进上面，被凶进下面）
-- **心里想的**：她自己写的一句话，一天最多 8 条
+- **让我高兴的** / **让我难受的**：事件自动归类（夸奖进上面，被凶进下面）—— 这两栏一直是**记录**，
+  由事件表填，不是文章；
+- **心里想的**：**她自己写的一两句第一人称**（v1.14.0 起）。
+
+**v1.14.0 之前，「心里想的」实际永远是空的。** 那时只有外层模型主动调 `qq_longing action=thought`
+才会有一条 —— 没人会记得去调它，于是日记读起来就只有两行模板，也就是「固定台词」。
+
+现在改成插件自己写：心跳里判断一次「该不该写」，该写就把**当天发生的事 + 此刻七维状态 + 之前写过的话**
+交给 `ctx.llm`，取回一到两句，清洗后落进当天。四道门保证它不会变成刷屏或烧钱：
+
+| 门 | 默认 | 作用 |
+|---|---|---|
+| `diaryAutoWrite` | true | 总闸。关掉就只剩两栏模板（旧行为） |
+| `diaryMinEvents` | 2 | 当天至少发生几件事才值得写；一件都没有且今天没联系过 → 不写 |
+| `diaryMinGapMin` | 150 | 两条之间至少隔多久 |
+| `diaryPerDay` | 3 | 一天最多几条 |
+
+写作失败（没配模型、provider 报错、写出来全是出戏话）一律**静默**：日记保持原样，
+模板继续兜底，不写假话、不影响心跳。输出会过一遍清洗：引号、markdown、项目符号、括号旁白，
+以及「作为一个 AI」「用户」「提示词」这类出戏词命中即丢 —— 宁可这一条不写，也不留一句读着别扭的话。
 
 **她不会主动说出来。** 主动发出去就变成表演了，一天里真在想什么反而说不出口。
 
-三个看法：
+四个看法：
 
-1. 面板卡片「心情日记」；
-2. 聊天里问一句「看看你今天的日记」—— 模型会调 `qq_longing action=diary` 念给你；
-3. 直接读文件 `心情日记.json`。
+1. 面板卡片「心情日记」，带一个「让她现在写一篇」的按钮；
+2. 聊天里问一句「看看你今天的日记」—— 模型会调 `action=diary` 念给你；
+   让她现写则调 `action=reflect`（由她自己写，不是模型替她编）；
+3. 直接读文件 `心情日记.json`；
+4. 工具 `doctor`：会打印今天写了几条。
 
 往外接的口子（通道无关，不接也不影响运行）：
 
 ```js
-globalThis.__dshLongingDiary(3)        // 最近 3 天的数组
-globalThis.__dshLongingDiaryText(1)    // 今天的文字版
-// HTTP: GET /dsh-longing/api/diary?days=7
-// HTTP: POST /dsh-longing/api/diary { text: "..." }   // 替她记一句
+globalThis.__dshLongingDiary(3)          // 最近 3 天的数组
+globalThis.__dshLongingDiaryText(1)      // 今天的文字版
+globalThis.__dshLongingReflect()         // 让她写一条（走额度/间隔判断）
+// HTTP: GET  /dsh-longing/api/diary?days=7
+// HTTP: POST /dsh-longing/api/diary { text: "..." }      // 你替她记一句
+// HTTP: POST /dsh-longing/api/diary/reflect             // 让她自己写一条（跳过额度判断）
+// HTTP: GET  /dsh-longing/api/diary/reflect             // 只看上次写的状态（lastWhy / lastAt）
 ```
+
+用的是 DSH 当前的默认模型；想单独指定就填 `diaryProvider` / `diaryModel`（留空 = 跟随默认）。
 
 ### 被晾着（v1.3.0 / v1.4.2 修睡眠）
 
