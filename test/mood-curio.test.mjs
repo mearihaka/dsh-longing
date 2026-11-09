@@ -150,7 +150,7 @@ test('buildQuery：技术词优先', () => {
 })
 
 test('buildQuery：撒娇词退到兜底话题，不拿去搜', () => {
-  const q = buildQuery({ lastUserText: '小七老婆，mua' }, { ...CURIO_DEFAULTS, personaName: '小七' }, 1)
+  const q = buildQuery({ lastUserText: '宝贝，mua' }, { ...CURIO_DEFAULTS, personaName: '小七' }, 1)
   assert.ok(!q.includes('小七'), `不该带着名字去搜：${q}`)
 })
 

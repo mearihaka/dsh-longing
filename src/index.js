@@ -1014,9 +1014,6 @@ export function apply(ctx, configIn) {
     writeJson(stateFile, snapState(), logger)
     refreshBlock()
 
-    // 先把今天聊天记录里的事实补进日记（本地读盘 + 正则，零 token），再决定要不要让她写
-    try {
-      } catch {}
     // 日记：每轮只判断一次「要不要写」，真要写才发一个模型请求（失败静默，不影响心跳）
     void reflectNow().catch(() => {})
 
