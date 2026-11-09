@@ -231,6 +231,22 @@ test('noteInitiate：说出口后话题被清掉，不会下一轮再讲一遍',
 })
 
 // ── 五、抽签稳定性 ──
+test('mood：处境的时间段跟着真实钟点，不再下午说半夜', async () => {
+  const { sceneOf, hourBucket } = await import('../src/mood.js')
+  assert.equal(hourBucket(3), 'night')
+  assert.equal(hourBucket(7), 'dawn')
+  assert.equal(hourBucket(10), 'morning')
+  assert.equal(hourBucket(13), 'noon')
+  assert.equal(hourBucket(16), 'afternoon')
+  assert.equal(hourBucket(19), 'dusk')
+  assert.equal(hourBucket(23), 'night')
+  const at3pm = new Date(2026, 10, 8, 15, 0, 0).getTime()
+  for (let seed = 1; seed <= 12; seed += 1) {
+    const { sceneLine } = sceneOf({ lust: 70, lewd: 60, seed, now: at3pm })
+    assert.ok(!/午夜|清早|刚擦黑|台灯/.test(sceneLine), `15:00 抽出了「${sceneLine}」`)
+  }
+})
+
 test('mood：同一个 seed 抽到同一句（可复现）', async () => {
   const { variantOf } = await import('../src/mood.js')
   assert.equal(variantOf('lust', 42), variantOf('lust', 42))

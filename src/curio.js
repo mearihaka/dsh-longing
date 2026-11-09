@@ -167,6 +167,37 @@ export function buildQuery(state, cfg = {}, seed = 1) {
   return pool[Math.abs(Math.floor(seed)) % pool.length]
 }
 
+/** 读响应体，最多 cap 字节（避免把一整个大页面拉进内存）。 */
+async function readCapped(res, cap = 2_000_000) {
+  const reader = res.body?.getReader?.()
+  if (!reader) return (await res.text()).slice(0, cap)
+  const chunks = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const buf = value
+      total += buf.length
+      chunks.push(buf)
+      if (total >= cap) break
+    }
+  } catch {
+    // 读一半断了：用已经拿到的部分，别整次作废
+  } finally {
+    try {
+      await reader.cancel?.()
+    } catch {}
+  }
+  const all = new Uint8Array(total)
+  let off = 0
+  for (const c of chunks) {
+    all.set(c, off)
+    off += c.length
+  }
+  return new TextDecoder('utf-8', { fatal: false }).decode(all.subarray(0, cap))
+}
+
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36'
 
@@ -208,7 +239,12 @@ export async function searchTopic(query, { limit = 5, timeoutMs = 12000 } = {}) 
       signal: ac.signal,
     })
     if (!res.ok) return []
-    const html = await res.text()
+    // 12s 超时只挡时间，挡不住体积：先看 content-length，再按 2MB 硬截
+    const MAX_BODY = 2_000_000
+    if (Number(res.headers.get('content-length') ?? 0) > MAX_BODY) return []
+    // 2026-11-10（审计 F22）：res.text() 会先把整页读进内存再 slice —— 「硬截 2MB」
+    // 其实没截住下载量。这里按流读，读满 2MB 就断开。
+    const html = (await readCapped(res, MAX_BODY)).slice(0, MAX_BODY)
     const out = []
     for (const m of html.matchAll(/<li class="b_algo"[\s\S]*?(?=<li class="b_algo"|<\/ol>)/g)) {
       const block = m[0]

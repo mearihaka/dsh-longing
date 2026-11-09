@@ -6,6 +6,10 @@
 保留这份记录的原因很简单：这套东西是给「状态影响说话」用的，错误不会崩，
 只会让她说话不对劲——那种 bug 最难自己发现，所以需要外部视角。
 
+**2026-11-09 复核（v1.14.1）**：25 条逐条对着代码重新核了一遍，全部仍然成立，
+证据见文末[复核清单](#复核清单2026-11-09)。唯一过期的是数字——测试从 119 条涨到 164 条，
+体检从 18 项涨到 20 项。
+
 ## 四层视角
 
 | 视角 | 重点 | 找到 | 最狠的一条 |
@@ -105,7 +109,7 @@ comfyUp === false ? '图床没开' : nsfwImages ? '调 generate_image' : comfyUp
 
 </details>
 
-## 测试缺口（审查顺带指出，已补 5 条）
+## 测试缺口（审查顺带指出，已补 6 条）
 
 这六条当时一条测试都没有，其中三条正是修掉的 P0/P1：
 
@@ -121,6 +125,47 @@ comfyUp === false ? '图床没开' : nsfwImages ? '调 generate_image' : comfyUp
 ## 怎么自己跑一遍
 
 ```bash
-node --test --test-concurrency=1     # 119 条（1.13.1 起）
-node tools/doctor.mjs --panel http://127.0.0.1:<端口>/dsh-longing   # 18 项体检
+node --test --test-concurrency=1     # 164 条（1.14.5；审计当时 119 条）
+node tools/doctor.mjs --panel http://127.0.0.1:<端口>/dsh-longing   # 20 项体检（1 项在干净环境里会显示未连接，正常）
 ```
+
+数字会长，所以上面这两个数只当参考；以 `npm test` 的实际输出为准。
+
+## 复核清单（2026-11-09）
+
+对着 v1.14.1 的代码逐条找落点，行号是复核当天的。
+
+| 层 | 修法 | 代码位置 |
+|---|---|---|
+| 安全 | `channels` 白名单 | `src/index.js:1015` `/^[a-z0-9_-]{1,16}$/` |
+| 安全 | `comfyLaunchScript` 三项收紧 | `src/index.js:520`（扩展名）、`:525`（允许目录）、`:537`（`RemoteSigned`） |
+| 安全 | 原型链事件名 | `src/events.js:97`、`src/index.js:354,711` `Object.hasOwn(EVENTS, …)` |
+| 安全 | `comfyBaseUrl` 只许本机 | `src/index.js:568,574` |
+| 安全 | 令牌改 `sessionStorage` | `panel/index.html:305` |
+| 安全 | 非主人只回档位词 | `src/index.js:1238` |
+| 安全 | `personaNote` 消毒/100 字/挪到块首 | `src/prompt.js:70-77`（消毒）、`:676`（块首） |
+| 安全 | 事件冷却 + 安全词封顶 | `src/index.js:707-717`（30 秒）、`src/events.js:69,110`（`MAX_STRONG = 30`） |
+| 并发 | 重试比对 mtime | `src/index.js:123-128` |
+| 并发 | timer 句柄 + dispose | `src/index.js:771-772,882` |
+| 并发 | 注入文件原子写 | `src/index.js:156` `writeTextAtomic` |
+| 并发 | 写失败要检查返回值 | `src/index.js:1083-1085`（pause 为例，resume/preset 同） |
+| 并发 | `fireEvent` 刷新 `lastContactAt` | `src/index.js:721` |
+| 并发 | `stop` 取更长暂停 | `src/events.js:115` `Math.max` |
+| 并发 | `body()` 分片拼接 | `src/index.js:915` `Buffer.concat` |
+| 并发 | tick 整对象覆盖 | 缓解，`docs/DESIGN.md` §9.1 |
+| 数值 | `peakKey` 归到高峰起始日 | `src/curve.js:101,360` |
+| 数值 | `tickedAt` 做衰减基准 | `src/curve.js:341,365` |
+| 数值 | `num()` 把 null/''/[] 当缺失 | `src/curve.js:25-31` |
+| 数值 | `deepestUnlocked` 改最长已解锁前缀 | `src/unlock.js:59` |
+| 数值 | 采样步长 ≤ 窗口宽一半 | `src/curve.js:282,304` |
+| 数值 | 面板空数字框跳过 | `panel/index.html:702` |
+| 提示词 | `scene` 消毒 + 门禁 | `src/prompt.js:78-92` |
+| 提示词 | `resist` 档内互斥 | `src/prompt.js:323,581` |
+| 提示词 | `eff ∈ [25,40)` 改第一人称 | `src/prompt.js:486-514` |
+| 提示词 | `boundaryLine` 前缀式取下一档 | `src/unlock.js` `boundaryLine` |
+| 提示词 | `approachLine` 统一出口 | `src/prompt.js:603,690` |
+| 提示词 | 生图三态顺序 `false → 未知 → true` | `src/prompt.js:648-657` |
+
+复核顺带发现一处审计没写到的：`extractThoughts` 之前用**标点**判断流有没有被截断，
+模型忘打句号就把整条日记砍成空（面板表现为「让她写一篇没反应」）。已在 1.14.2 改成
+按 `finish.reason.kind` 判断，`length`/`error` 才算截断。

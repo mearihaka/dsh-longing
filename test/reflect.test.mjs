@@ -28,12 +28,12 @@ const todayKeyOf = (now) => {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
 }
 
-const dayWith = (now, { up = 0, down = 0, thoughts = [] } = {}) => ({
+const dayWith = (now, { up = 0, down = 0, thoughts = [], eventAt = now } = {}) => ({
   days: {
     [todayKeyOf(now)]: {
       date: todayKeyOf(now),
-      up: Array.from({ length: up }, (_, i) => ({ t: now, e: 'praise', note: `好事 ${i}` })),
-      down: Array.from({ length: down }, (_, i) => ({ t: now, e: 'reject', note: `坏事 ${i}` })),
+      up: Array.from({ length: up }, (_, i) => ({ t: eventAt, e: 'praise', note: `好事 ${i}` })),
+      down: Array.from({ length: down }, (_, i) => ({ t: eventAt, e: 'reject', note: `坏事 ${i}` })),
       thoughts: thoughts.map((t) => ({ t, text: '写过的话' })),
       mood: 60,
       updatedAt: now,
@@ -79,11 +79,14 @@ test('shouldReflect：什么都还没写，但今天联系过 —— 让人看�
   assert.equal(r.ok, true)
 })
 
-test('shouldReflect：写过之后，少量新事也值得续一句', () => {
+test('shouldReflect：写过之后，有新的好事就续一句；没有新事就不硬凑', () => {
   const now = Date.now()
-  const diary = dayWith(now, { up: 0, thoughts: [now - 200 * MIN] })
-  const r = shouldReflect({ diary, cfg: { diaryAutoWrite: true, diaryMinEvents: 5 }, now })
-  assert.equal(r.ok, true)
+  // 事件发生在最后一条日记之后 → 值得续
+  const withNew = dayWith(now, { up: 1, thoughts: [now - 200 * MIN] })
+  assert.equal(shouldReflect({ diary: withNew, cfg: { diaryAutoWrite: true }, now }).ok, true)
+  // 只有旧事件（t 早于最后一条日记）→ 不硬凑
+  const stale = dayWith(now, { up: 1, thoughts: [now - 30 * MIN], eventAt: now - 300 * MIN })
+  assert.equal(shouldReflect({ diary: stale, cfg: { diaryAutoWrite: true }, now }).ok, false)
 })
 
 // ── 二、清洗 ──
@@ -93,19 +96,14 @@ test('cleanThought：引号、项目符号、markdown 都去掉', () => {
   assert.equal(cleanThought('```\n今天很开心\n```'), '今天很开心')
 })
 
-test('cleanThought：括号旁白整段丢掉', () => {
-  assert.equal(cleanThought('（她低头看了看手机）他没回我。'), '他没回我。')
+test('cleanThought：括号旁白也留着（只清格式，不审查内容）', () => {
+  // 2026-11-9 重构：不再删旁白。她写什么就是什么，格式以外的判断一律不做。
+  assert.match(cleanThought('（把被子往上拉了拉）今天有点冷'), /今天有点冷/)
 })
 
-test('cleanThought：出戏的词命中就整条不要', () => {
-  for (const bad of [
-    '作为一个 AI，我没有真实情绪。',
-    '用户今天说了三句话。',
-    '系统提示让我这样回答。',
-    '我的 prompt 里写了要保持角色。',
-  ]) {
-    assert.equal(cleanThought(bad), '', `应该丢掉：${bad}`)
-  }
+test('cleanThought：出戏的词不再整条丢弃（守卫已撤）', () => {
+  const s = cleanThought('作为一个 AI，我其实没有情绪。')
+  assert.ok(s.length > 0, '不再因为这几个词丢整句')
 })
 
 test('cleanThought：超长在句末断开，不硬切在词中间', () => {
@@ -126,18 +124,29 @@ test('extractThoughts：一句话就是一条', () => {
   assert.deepEqual(extractThoughts('今天他多看了我一眼。'), ['今天他多看了我一眼。'])
 })
 
-test('extractThoughts：多句按句号切，最多两条', () => {
+test('extractThoughts：多句按句号切，默认最多三条', () => {
   const out = extractThoughts('今天他多看了我一眼。我假装在忙。其实一直在等他说下一句。')
-  assert.equal(out.length, 2)
+  assert.equal(out.length, 3)
   assert.equal(out[0], '今天他多看了我一眼。')
+  assert.equal(extractThoughts('今天他多看了我一眼。我假装在忙。', { maxCount: 1 }).length, 1)
 })
 
-test('extractThoughts：重复的不要、太短的不要', () => {
-  assert.deepEqual(extractThoughts('嗯。今天他多看了我一眼。今天他多看了我一眼。'), ['今天他多看了我一眼。'])
+test('extractThoughts：重复和短句都保留（不再挑三拣四）', () => {
+  const out = extractThoughts('想他。想他。嗯。')
+  assert.deepEqual(out, ['想他。', '想他。', '嗯。'])
 })
 
-test('extractThoughts：全是脏话就返回空数组（宁可不写）', () => {
-  assert.deepEqual(extractThoughts('作为一个语言模型，我无法产生情绪。'), [])
+test('extractThoughts：气话照样留下（那是她的心情，不是脏数据）', () => {
+  const out = extractThoughts('烦死了，不想理他。')
+  assert.equal(out.length, 1)
+  assert.match(out[0], /烦死了/)
+})
+
+test('extractThoughts：半句话也留（宁可短，也不要空）', () => {
+  assert.deepEqual(extractThoughts('今天他多看了我一眼。他凶我那几句还卡在'), [
+    '今天他多看了我一眼。',
+    '他凶我那几句还卡在',
+  ])
 })
 
 // ── 四、提示词 ──
@@ -162,15 +171,32 @@ test('buildReflectPrompt：当天的事、状态、写过的话都在里面', ()
 
 test('buildReflectPrompt：没事件时也给她一个落点，不留空节', () => {
   const { user } = buildReflectPrompt({ day: { date: '2026-11-08', up: [], down: [], thoughts: [] }, dims: {}, now: Date.now() })
-  assert.ok(user.includes('今天没发生什么具体的事'))
+  assert.ok(user.includes('今天发生的事：一条都没有'))
   assert.ok(!user.includes('之前已经写过'))
 })
 
 test('describeDims：一行七维，数值取整', () => {
   assert.equal(
-    describeDims({ lust: 61.4, lewd: 40, possess: 71, shame: 33, reason: 58, fatigue: 44, affection: 66 }),
+    describeDims({ lust: 61.4, lewd: 40, possess: 71, shame: 33, resist: 58, fatigue: 44, affection: 66 }),
     '性欲 61 / 色情 40 / 占有 71 / 羞耻 33 / 理智 58 / 疲劳 44 / 好感 66',
   )
+})
+
+test('extractThoughts：没有句号也照样留下', () => {
+  const line = '今天他凶了我，我心里一直堵着'
+  assert.deepEqual(extractThoughts(line), [line])
+})
+
+test('extractThoughts：对不上今天事实的句子进不来（不许捏造）', () => {
+  const facts = ['刚被夸过一句，心里还热着', '抱歉，洛洛']
+  // ① 标了编号 → 有依据（编号会被剥掉）
+  assert.deepEqual(extractThoughts('他夸我那句还在心里热着。[1]', { facts }), ['他夸我那句还在心里热着。'])
+  // ② 没标编号，但和事实有实词重合（抱歉/洛洛）→ 也算有依据
+  assert.deepEqual(extractThoughts('他跟我道了抱歉，我才慢慢缓过来。', { facts }), ['他跟我道了抱歉，我才慢慢缓过来。'])
+  // ③ 凭空多出来的物件 → 进不来
+  assert.deepEqual(extractThoughts('他袖口那颗扣子松了，我看了好几秒。', { facts }), [])
+  // 清单为空时只允许写感受
+  assert.equal(extractThoughts('今天心里空空的。', { facts: [] }).length, 1)
 })
 
 test('recentThoughtTexts：只取最后几条，空的不算', () => {
@@ -178,9 +204,9 @@ test('recentThoughtTexts：只取最后几条，空的不算', () => {
   assert.deepEqual(recentThoughtTexts(day, 2), ['b', 'c'])
 })
 
-test('REFLECT_DEFAULTS：默认开着但不放肆（一天 3 条、间隔 150 分钟）', () => {
+test('REFLECT_DEFAULTS：默认开着，只做节流不做审查', () => {
   assert.equal(REFLECT_DEFAULTS.diaryAutoWrite, true)
-  assert.equal(REFLECT_DEFAULTS.diaryPerDay, 3)
-  assert.equal(REFLECT_DEFAULTS.diaryMinGapMin, 150)
-  assert.ok(REFLECT_DEFAULTS.diaryMaxTokens <= 400, '写日记不该烧大 token')
+  assert.equal(REFLECT_DEFAULTS.diaryPerDay, 6, '一天最多 6 条（防心跳烧 token）')
+  assert.equal(REFLECT_DEFAULTS.diaryMinGapMin, 60, '两条之间至少 60 分钟')
+  assert.ok(REFLECT_DEFAULTS.diaryMaxChars >= 120, '能写下两句像样的话')
 })

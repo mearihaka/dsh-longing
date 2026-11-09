@@ -1,15 +1,16 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ConfigSchema } from './config.js'
-import { addThought, formatDay, pruneDiary, recentDiary, recordEvent } from './diary.js'
+import { ConfigSchema, validatePatch } from './config.js'
+import { addThought, formatDay, noteReflect, pruneDiary, recentDiary, recordEvent, replaceThoughts, todayOf } from './diary.js'
 // 2026-11-08：日记改由她自写（当天事件 + 七维状态 → 模型 → 一两句第一人称）。
 // 旧的 thoughts 只能靠外层模型主动调工具写，实测永远是空的（见 reflect.js 头注释）。
 import { REFLECT_DEFAULTS, buildReflectPrompt, extractThoughts, recentThoughtTexts, shouldReflect } from './reflect.js'
 import { EVENTS, applyEvent, recentEvents } from './events.js'
+// 2026-11-09：日记的「事实」只来自事件记录（含 detail 原话），不读聊天记录原文。
 import { buildBlock, modeOf } from './prompt.js'
 import { imageGate, noteImage, noteInitiate, proactiveGate } from './proactive.js'
 // 2026-11-06：好奇心 + 自主搜索。心跳只调 tickCurio/shouldSearch（纯算术），
@@ -27,6 +28,7 @@ import {
   nextState,
   num,
   pressureOf,
+  todayKey,
   round2,
 } from './curve.js'
 
@@ -60,6 +62,7 @@ const NUM_KEYS = new Set([
   // 2026-11-07：这两个键当初写了注释却漏进清单 —— 面板保存回 200、值原地不动。
   // 教训不是「记得加键」，而是「测试只验 GET 里有这个键，没验 POST 能改这个键」。
   'proactivePerHour', 'proactiveCooldownMin',
+  // 2026-11-09：日记只读今天的事件，不碰聊天记录
 ])
 const BOOL_KEYS = new Set([
   'enabled', 'stealthInjection', 'autoInitiate', 'nsfwEnabled', 'nsfwImages', 'curveEnabled', 'presetsEnabled', 'voiceEnabled',
@@ -74,6 +77,7 @@ const STR_KEYS = new Set([
   'personaName', 'toolName',
   'curioTopics',
   'diaryProvider', 'diaryModel', 'diaryPersona',
+  'ownerRef',
 ])
 // 面板能写的键：写死是为了防止任意键落盘。状态键刻意不在里面。
 const ALLOWED_KEYS = new Set([...NUM_KEYS, ...BOOL_KEYS, ...STR_KEYS])
@@ -106,10 +110,22 @@ function readJson(file, fallback) {
   }
 }
 
+// 2026-11-10（审计 F01）：每个文件一个提交序号。
+// 以前只用 mtime 比对，还有 50ms 容忍 —— A 写失败、B 在 10ms 内写成功、A 20ms 后重试，
+// 20 < 50 判不出过期，A 的旧快照就把 B 盖回去了。mtime 是「别人写的」的线索，
+// 不是「我这份是不是最新」的判据；同进程内谁最后提交，只有序号知道。
+const writeSeq = new Map()
+function nextWriteSeq(file) {
+  const n = (writeSeq.get(file) ?? 0) + 1
+  writeSeq.set(file, n)
+  return n
+}
+
 function writeJson(file, data, logger) {
   // 原子写：临时文件 + rename。Windows 上被占用会 EPERM，用 setTimeout 异步重试。
   // 重试前先看目标文件的 mtime：如果在我们写 tmp 之后有人写过，说明对方的数据更新，
   // 我们这份是旧快照 —— 直接放弃，别把别人的更新盖回去（那会静默丢事件增量）。
+  const mySeq = nextWriteSeq(file)
   let ok = false
   try {
     mkdirSync(dirname(file), { recursive: true })
@@ -118,6 +134,13 @@ function writeJson(file, data, logger) {
     writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8')
     const attempt = (n) => {
       try {
+        // 同进程里已经有更晚的提交（同一文件）→ 我这份就是旧快照，别覆盖
+        if ((writeSeq.get(file) ?? 0) !== mySeq) {
+          try {
+            unlinkSync(tmp)
+          } catch {}
+          return
+        }
         let stale = false
         try {
           // 2026-11-07：原来直接比 `mtimeMs > wroteAt`，而文件系统时间戳的精度可能比
@@ -234,7 +257,8 @@ export function apply(ctx, configIn) {
   // 可选迁移：只有显式配了 migrateFrom 才搬，搬一次就够（不写死任何本机路径）
   const migrateFrom = String(config?.migrateFrom ?? '').trim()
   if (!statePath && migrateFrom) {
-    for (const name of ['欲望状态.json', '欲望面板配置.json', '欲望历史.json']) {
+    // 2026-11-10（审计 F24）：显式迁移以前漏了日记，搬完只剩数值没有她写过的话
+    for (const name of ['欲望状态.json', '欲望面板配置.json', '欲望历史.json', '心情日记.json']) {
       const dest = join(baseDir, name)
       const src = join(migrateFrom, name)
       if (existsSync(dest) || !existsSync(src)) continue
@@ -301,6 +325,10 @@ export function apply(ctx, configIn) {
 
   // 热重载时要能真正停下来：旧闭包继续跑会重复注册路由和工具、用过期 state 覆盖注入文件
   let disposed = false
+  // 2026-11-10（审计 F02）：实例代际。销毁后仍可能有 Promise 在等模型，
+  // 等它回来时如果还拿旧闭包写盘，就会把新实例的记录盖掉。
+  const myGen = (globalThis.__dshLongingGen = num(globalThis.__dshLongingGen) + 1)
+  const stillMine = () => !disposed && num(globalThis.__dshLongingGen) === myGen
 
   // 初始值只认插件配置（面板配置里的状态键已经被清掉了），状态文件才是真相。
   const base = {
@@ -340,7 +368,9 @@ export function apply(ctx, configIn) {
     // 主动开口的账本：谁在什么时候说出口的。「每天最多几次」「每小时几次」
     // 「两次至少隔多久」全靠它算，之前的实现里压根没记过。
     out.proactiveLog = Array.isArray(out.proactiveLog)
-      ? out.proactiveLog.map(Number).filter((t) => Number.isFinite(t) && t > 0).sort((a, b) => a - b).slice(-64)
+      // 2026-11-10（审计 F08）：日配额可以配到 720，账本只留 64 条就永远到不了门槛。
+      // 留 1024：够覆盖 720 的日额度，文件也不会大。
+      ? out.proactiveLog.map(Number).filter((t) => Number.isFinite(t) && t > 0).sort((a, b) => a - b).slice(-1024)
       : []
     out.lastInitiateAt = num(out.lastInitiateAt, 0)
     out.lastInitiateInfo = out.lastInitiateInfo && typeof out.lastInitiateInfo === 'object' ? out.lastInitiateInfo : null
@@ -408,6 +438,13 @@ export function apply(ctx, configIn) {
   let reflecting = false
   let lastReflectAt = 0
   let lastReflectWhy = 'idle'
+  // 自动路径的「为什么没写」单独放：以前和 lastWhy 共用一个变量，tick 每分钟
+  // 跑一次就会把它覆盖成 gap/quota，于是手动写完再看状态永远是「间隔不够」。
+  let lastReflectGate = 'idle'
+  // 写空时留的现场（模型原文前 300 字），排查用
+  let lastReflectRaw = ''
+  // 见过推理流（reasoning-delta）就记住：之后的额度下限抬到 1600，别每轮都先白花一次
+  let reasoningModelSeen = false
 
   // llm 是可选依赖：没装适配器、没配模型时返回 null，插件照常跑。
   const reflectCaller = () => {
@@ -434,7 +471,7 @@ export function apply(ctx, configIn) {
     const cfg = settings() ?? {}
     const gate = shouldReflect({ diary, state, cfg, now: Date.now() })
     if (!gate.ok && !force) {
-      lastReflectWhy = gate.why
+      lastReflectGate = gate.why
       return gate
     }
     if (gate.why === 'off' && !force) {
@@ -447,30 +484,72 @@ export function apply(ctx, configIn) {
       return { ok: false, why: 'no-model' }
     }
     reflecting = true
+    const startedAt = Date.now()
     let raw = ''
+    let todayFacts = []
+    let finishKind = 'stop'
+    let reasonChars = 0
+    const chunkTypes = new Set()
+    // 2026-11-9：推理型模型（stream 里出现 reasoning-delta）会把 token 全用在思考上，
+    // finish=max-tokens 时一个字正文都没有 —— 面板上看着像「她不想写」。
+    // 一旦见过推理流，之后的额度直接抬到这个下限。
+    const askOnce = async (pmt, tokenBudget, extraUser = '') => {
+      raw = ''
+      finishKind = 'stop'
+      reasonChars = 0
+      chunkTypes.clear()
+      const stream = caller.llm.stream({
+        provider: caller.provider,
+        model: caller.model,
+        system: pmt.system,
+        messages: [{ role: 'user', content: [{ type: 'text', text: pmt.user + extraUser }] }],
+        maxTokens: tokenBudget,
+        temperature: num(cfg.diaryTemperature, REFLECT_DEFAULTS.diaryTemperature),
+        signal,
+      })
+      for await (const chunk of stream) {
+        if (chunk?.type) chunkTypes.add(String(chunk.type))
+        const piece = chunk?.textDelta ?? chunk?.text ?? (typeof chunk?.delta === 'string' ? chunk.delta : undefined)
+        if (chunk?.type === 'text-delta' && typeof piece === 'string') raw += piece
+        else if (chunk?.type === 'reasoning-delta') {
+          if (typeof piece === 'string') reasonChars += piece.length
+        } else if (chunk?.type === 'finish') {
+          const kind = String(chunk?.reason?.kind ?? 'stop')
+          finishKind = kind
+          if (kind === 'error') break
+        }
+      }
+    }
     try {
-      const day = recentDiary(diary, 1)[0]
+      // 2026-11-10（审计 F09）：todayOf 保证拿到的是「今天」（没有就是空壳），
+      // 不再拿 recentDiary()[0] —— 今天还没记录时它给的是昨天。
+      const day = todayOf(diary, startedAt)
+      // 今天的依据：事件原话（detail）优先，没有就退回固定 note
+      todayFacts = [...(day?.up ?? []), ...(day?.down ?? [])].map((e) => String(e?.detail || e?.note || '')).filter(Boolean)
       const prompt = buildReflectPrompt({
         day,
         dims: state,
         previous: recentThoughtTexts(day, 3),
         persona: String(cfg.diaryPersona ?? '').trim() || String(cfg.personaName ?? '').trim(),
+        maxChars: Math.round(num(cfg.diaryMaxChars, REFLECT_DEFAULTS.diaryMaxChars)),
+        owner: String(cfg.ownerRef ?? '').trim() || 'TA',
         now: Date.now(),
       })
-      const stream = caller.llm.stream({
-        provider: caller.provider,
-        model: caller.model,
-        system: prompt.system,
-        messages: [{ role: 'user', content: [{ type: 'text', text: prompt.user }] }],
-        maxTokens: Math.round(num(cfg.diaryMaxTokens, REFLECT_DEFAULTS.diaryMaxTokens)),
-        temperature: num(cfg.diaryTemperature, REFLECT_DEFAULTS.diaryTemperature),
-        signal,
-      })
-      for await (const chunk of stream) {
-        // 两种字段名都认：d.ts 写的是 text，运行时这一版给的是 textDelta
-        const piece = chunk?.textDelta ?? chunk?.text
-        if (chunk?.type === 'text-delta' && typeof piece === 'string') raw += piece
-        else if (chunk?.type === 'finish' && chunk?.reason?.kind === 'error') break
+      const baseTokens = Math.round(num(cfg.diaryMaxTokens, REFLECT_DEFAULTS.diaryMaxTokens))
+      // 2026-11-10（审计 F13）：配置是硬上限。以前把 60 抬到 1600 —— 用户明确给了小预算，
+      // 插件不能自己加十倍。要重问可以，但必须还在「用户允许的量级」里。
+      const firstBudget = Math.min(baseTokens, 4000)
+      await askOnce(prompt, firstBudget)
+      if (!raw.trim() && reasonChars > 0) {
+        reasoningModelSeen = true
+        const canGrow = firstBudget >= 600
+        if (!canGrow) {
+          logger.warn?.(`[dsh-longing] 只思考没正文，且 diaryMaxTokens=${firstBudget} 太小，按配置不追加预算`)
+        } else {
+          const retryTokens = Math.min(firstBudget * 3, 4000)
+          logger.info?.(`[dsh-longing] 这次只有思考没有正文（finish=${finishKind}，思考 ${reasonChars} 字），用 ${retryTokens} 重问`)
+          await askOnce(prompt, retryTokens, '\n\n（不要写推理过程，直接给出那两三句话。）')
+        }
       }
     } catch (e) {
       lastReflectWhy = 'error'
@@ -479,16 +558,55 @@ export function apply(ctx, configIn) {
     } finally {
       reflecting = false
     }
+    // 2026-11-10（审计 F02）：旧实例（已 dispose）不许落盘 —— 它手里的 diary 是旧的，
+    // 写下去会把新实例的记录盖掉。在途请求没法取消，但可以让它「不提交」。
+    if (!stillMine()) {
+      lastReflectWhy = 'stale'
+      logger.info?.('[dsh-longing] 旧实例的写作已作废，不落盘')
+      return { ok: false, why: 'stale' }
+    }
+    // 2026-11-10（审计 F14）：finish=error 表示这一轮出错，正文即使是完整的也不可信
+    if (finishKind === 'error') {
+      lastReflectWhy = 'model-error'
+      lastReflectRaw = String(raw ?? '').replace(/\s+/g, ' ').trim().slice(0, 200)
+      diary = noteReflect(diary, { now: Date.now(), ok: false })
+      saveDiary()
+      logger.warn?.('[dsh-longing] 日记这一轮出错（finish=error），不落盘')
+      return { ok: false, why: 'model-error' }
+    }
+    // 写出来对不上今天这些事实的句子进不了日记 —— 不许捏造。
     const lines = extractThoughts(raw, {
       maxChars: Math.round(num(cfg.diaryMaxChars, REFLECT_DEFAULTS.diaryMaxChars)),
-      maxCount: 2,
+      maxCount: 3,
+      facts: todayFacts,
     })
     if (!lines.length) {
-      lastReflectWhy = 'empty'
-      return { ok: false, why: 'empty' }
+      // 失败也要记账：否则每 60 秒重试一次，一直烧 token（审计 F05 的退避）
+      diary = noteReflect(diary, { now: Date.now(), ok: false })
+      saveDiary()
+      // 2026-11-9：空了要留证据，否则面板只会说「没写出来」，排查全靠猜。
+      const field = raw.replace(/\s+/g, ' ').trim()
+      const why = finishKind === 'error'
+        ? 'model-error'
+        : (!raw.trim() && reasonChars > 0
+          ? 'reasoning-only'
+          : (todayFacts.length && raw.trim() ? 'no-anchor' : 'empty'))
+      lastReflectRaw = field.slice(0, 300)
+        || `(没收到正文; finish=${finishKind}; 思考 ${reasonChars} 字; chunk=${[...chunkTypes].join(',') || '无'})`
+      lastReflectWhy = why
+      logger.warn?.(`[dsh-longing] 日记写出来是空的（finish=${finishKind}）：${lastReflectRaw}`)
+      return { ok: false, why, raw: lastReflectRaw }
     }
-    for (const line of lines) diary = addThought(diary, line, Date.now())
-    saveDiary()
+    // 一天一篇：这次写的替换掉今天她写的部分（手动「记下一句」kind=mine 保留），
+    // 以前是逐句 push，一天能堆八句近似的话，看着像复读机。
+    diary = replaceThoughts(diary, lines, Date.now())
+    // 水位记「开始写作的时间」，不是完成时间：思考期间新发生的事下一轮还能用（F11）
+    diary = noteReflect(diary, { now: Date.now(), ok: true, wroteAt: startedAt })
+    // 2026-11-10（审计 F23）：落盘失败以前没人管，接口照样回 ok
+    if (!saveDiary()) {
+      lastReflectWhy = 'write-failed'
+      return { ok: false, why: 'write-failed' }
+    }
     lastReflectAt = Date.now()
     lastReflectWhy = 'wrote'
     logger.info?.(`[dsh-longing] 日记：${lines.join(' / ')}`)
@@ -497,6 +615,8 @@ export function apply(ctx, configIn) {
   // 同进程零 IO 的入口（别的插件 / 脚本直接调）
   try {
     globalThis.__dshLongingReflect = reflectNow
+
+
   } catch {}
 
   // ── 生图后端：探测 + 可选自动拉起（失败只降级，不影响聊天）──
@@ -575,7 +695,9 @@ export function apply(ctx, configIn) {
     try {
       const ac = new AbortController()
       const timer = setTimeout(() => ac.abort(), 1500)
-      const res = await fetch(`${baseUrl}/system_stats`, { signal: ac.signal })
+      // 只校验了初始 URL 的回环主机；fetch 默认跟随重定向，本地端点一跳就能把
+      // 请求带去外部/内网。redirect:'error' 让重定向直接失败（审计 F21）。
+      const res = await fetch(`${baseUrl}/system_stats`, { signal: ac.signal, redirect: 'error' })
       clearTimeout(timer)
       comfy.up = res.ok
       comfy.error = res.ok ? '' : `HTTP ${res.status}`
@@ -593,7 +715,13 @@ export function apply(ctx, configIn) {
   const injectFile = join(baseDir, '欲望注入.txt')
   function refreshBlock() {
     const eff = settings()
-    const env = { comfyUp: comfy.known ? comfy.up : null }
+    // 2026-11-9：把「她自己写下的日记」带进注入块。取今天最后两条，
+    // 太多会盖过七维，太少则接不上刚才的心气。
+    const todayThoughts = (recentDiary(diary, 1)[0]?.thoughts ?? [])
+      .slice(-2)
+      .map((x) => String(x?.text ?? ''))
+      .filter(Boolean)
+    const env = { comfyUp: comfy.known ? comfy.up : null, thoughts: todayThoughts }
     const channels = Array.isArray(eff?.channels) ? eff.channels.map(String) : ['qq']
     const perChannel = {}
     for (const ch of channels) {
@@ -616,6 +744,9 @@ export function apply(ctx, configIn) {
   const isPaused = () => num(state.pausedUntil) > Date.now()
   /** 调试模式：关着的时候数值只能靠聊天养，滑块和工具都改不动。 */
   const isDebug = () => settings()?.debugMode === true
+  // 2026-11-10（审计 F04）：总开关判据。以前 enabled 只挡 tick。
+  const isEnabled = () => settings()?.enabled !== false
+  const isNsfw = () => settings()?.nsfwEnabled === true
 
   const curMode = () => modeOf(state, num(settings()?.resistWeight, 0.5), num(settings()?.affectionWeight, 0.4))
 
@@ -664,8 +795,11 @@ export function apply(ctx, configIn) {
       if (press[k].by && state[k] > press[k].cap) overBy[k] = press[k].by
     }
     const urge = urgeOf(state, eff)
+    // lastUserText 不出去：那是主人最后一条消息原文，面板用不到，
+    // 但这个端口一旦被反代出去它就跟着漏。它仍在状态文件里给好奇心取词用。
+    const { lastUserText: _omit, ...publicState } = state
     return {
-      ...state,
+      ...publicState,
       mode: modeOf(state, num(eff?.resistWeight, 0.5), num(eff?.affectionWeight, 0.4)),
       caps,
       overBy,
@@ -700,9 +834,15 @@ export function apply(ctx, configIn) {
   /** 事件冷却：非调试模式下同一事件 30 秒一次，挡住用 API 当无级滑块刷。 */
   const lastEventAt = new Map()
 
-  function fireEvent(name) {
+  function fireEvent(name, { detail = '', src = '' } = {}) {
     const key = String(name ?? '').trim()
     if (!Object.hasOwn(EVENTS, key)) return { ok: false, text: `未知事件：${key || '(空)'}` }
+    // 2026-11-10（审计 F04）：总开关要盖住事件入口。安全词（stop）不挡 —— 那是保护入口。
+    if (!isEnabled() && key !== 'stop') return { ok: false, text: '插件已关闭（enabled=false）' }
+    // 成人总闸关着时亲密事件不接受：否则「关了成人内容」还能靠事件刷出亲密记录
+    if (!isNsfw() && INTIMATE_EVENTS.has(key) && key !== 'stop') {
+      return { ok: false, text: '成人内容已关，这条不算' }
+    }
     if (isPaused() && INTIMATE_EVENTS.has(key)) return { ok: false, text: '已暂停亲密，这条不算' }
     if (!isDebug()) {
       const last = lastEventAt.get(key) ?? 0
@@ -717,7 +857,7 @@ export function apply(ctx, configIn) {
     // 「第一次」只记一次：第一次被碰、第一次被要、第一次听他说要走……
     if (FIRST_EVENTS.has(key) && !state.firsts[key]) state.firsts = { ...state.firsts, [key]: Date.now() }
     // 顺手记进当天的日记：好的进「让我高兴的」，坏的进「让我难受的」
-    diary = recordEvent(diary, { name: key, note: r.note, tone: r.tone, now: Date.now() })
+    diary = recordEvent(diary, { name: key, note: r.note, tone: r.tone, detail, src, now: Date.now() })
     saveDiary()
     writeJson(stateFile, snapState(), logger)
     refreshBlock()
@@ -735,16 +875,30 @@ export function apply(ctx, configIn) {
   // 原来只认字面 'owner'，不传等于「没联系过」，于是主动判据永远停在 never。
   globalThis.__dshLongingNote = (kind = 'owner', text = '') => {
     if (kind !== 'owner' && kind !== 'contact') return
-    // 暂停期间不涨 —— 否则「暂停」只是个标签
-    if (isPaused()) return
+    // 暂停期间不涨 —— 否则「暂停」只是个标签。
+    // 2026-11-10（审计 F18）：但「有人来找过她」这件事仍要记下来，
+    // 否则暂停期间说的话不算联系，恢复后会被当成被晾了一整天。
+    if (isPaused()) {
+      state.lastContactAt = Date.now()
+      state.everContacted = true
+      writeJson(stateFile, snapState(), logger)
+      return
+    }
     const eff = settings()
     // 2026-11-06：顺手记下他刚说的一句，好奇心搜什么词靠它抠。
     // 第二个参数是可选的，老调用方（不传 text）行为完全不变。
     if (text) state.lastUserText = String(text).slice(0, 200)
     const nextLust = clampFloat(num(state.lust, DEFAULTS.lust) + num(eff?.interactionLust, 0.1))
     const nextAff = clampFloat(num(state.affection, DEFAULTS.affection) + num(eff?.affectionGain, 1))
-    // 已经顶满就不重复写盘（连发多条消息时省掉成串的同步 IO）
-    if (nextLust === state.lust && nextAff === state.affection && !text) return
+    // 已经顶满就不重复写盘（连发多条消息时省掉成串的同步 IO）。
+    // 但联系时间要落：涨值满了不代表没联系过（审计 F18）。
+    if (nextLust === state.lust && nextAff === state.affection && !text) {
+      state.lastContactAt = Date.now()
+      state.everContacted = true
+      state.updatedAt = Date.now()
+      writeJson(stateFile, snapState(), logger)
+      return
+    }
     state.lust = nextLust
     state.affection = nextAff
     state.lastContactAt = Date.now() // 「被晾着多久」从这里算
@@ -764,6 +918,8 @@ export function apply(ctx, configIn) {
   comfyTimer?.unref?.()
   ctx?.on?.('dispose', () => {
     disposed = true
+    // 只有自己还是当前代际时才退回计数：旧实例销毁不该把新实例的标记清掉
+    if (num(globalThis.__dshLongingGen) === myGen) globalThis.__dshLongingGen = myGen - 1
     clearInterval(comfyTimer)
     if (webTimer) clearTimeout(webTimer)
     if (toolTimer) clearTimeout(toolTimer)
@@ -819,6 +975,10 @@ export function apply(ctx, configIn) {
     }
     // 暂停：冻结数值，只刷新注入（避免恢复后一次性补偿衰减）
     if (num(state.pausedUntil) > Date.now()) {
+      // 2026-11-10（审计 F17）：暂停期间也要推进衰减基准，否则恢复后
+      // dt 把整段暂停时长算进去，一次性补算 —— 「暂停 30 分钟，恢复后数值凭空掉了」。
+      state.tickedAt = Date.now()
+      state.curioAt = Date.now()
       state.updatedAt = Date.now()
       writeJson(stateFile, snapState(), logger)
       refreshBlock()
@@ -854,6 +1014,9 @@ export function apply(ctx, configIn) {
     writeJson(stateFile, snapState(), logger)
     refreshBlock()
 
+    // 先把今天聊天记录里的事实补进日记（本地读盘 + 正则，零 token），再决定要不要让她写
+    try {
+      } catch {}
     // 日记：每轮只判断一次「要不要写」，真要写才发一个模型请求（失败静默，不影响心跳）
     void reflectNow().catch(() => {})
 
@@ -1006,12 +1169,33 @@ export function apply(ctx, configIn) {
               if (!ALLOWED_KEYS.has(k)) continue // 状态键在这里就被挡掉，不会被写进配置
               // 通道名要拼进文件名（欲望注入.<ch>.txt），必须过白名单：
               // 否则 "..\\..\\Users\\x\\pwn" 能穿出状态目录写任意 .txt。
-              if (k === 'channels') patch.channels = (Array.isArray(v) ? v : []).map((x) => String(x).trim().toLowerCase()).filter((x) => /^[a-z0-9_-]{1,16}$/.test(x)).slice(0, 8)
-              else if (NUM_KEYS.has(k)) { const n = Number(v); if (Number.isFinite(n)) patch[k] = n }
-              else if (BOOL_KEYS.has(k)) patch[k] = Boolean(v)
-              else patch[k] = String(v ?? '').slice(0, 400)
+              // 2026-11-10（审计 F03）：不再 Number()/Boolean() 强转。
+              // Boolean('false') 是 true —— 用户以为关掉了联网/成人内容，其实开着。
+              // 原样交给 validatePatch，由 schema 定类型和范围，不合法就整单拒绝。
+              if (k === 'channels') {
+                patch.channels = (Array.isArray(v) ? v : []).map((x) => String(x).trim().toLowerCase()).filter((x) => /^[a-z0-9_-]{1,16}$/.test(x)).slice(0, 8)
+                continue
+              }
+              if (NUM_KEYS.has(k)) {
+                const n = typeof v === 'number' ? v : Number(String(v ?? '').trim())
+                patch[k] = Number.isFinite(n) ? n : NaN
+                continue
+              }
+              if (BOOL_KEYS.has(k)) {
+                patch[k] = typeof v === 'boolean' ? v : (v === 'true' ? true : v === 'false' ? false : NaN)
+                continue
+              }
+              patch[k] = typeof v === 'string' ? v.slice(0, 400) : v
             }
-            Object.assign(panelOverrides, patch)
+            const bad = Object.entries(patch).filter(([, v]) => typeof v === 'number' && Number.isNaN(v)).map(([k]) => k)
+            if (bad.length) {
+              return send(res, 400, JSON.stringify({ error: 'invalid', keys: bad, hint: '值和键的类型对不上（布尔要 true/false，数字要数值）' }))
+            }
+            const v = validatePatch(patch)
+            if (!v.ok) {
+              return send(res, 400, JSON.stringify({ error: 'invalid', details: v.error, keys: Object.keys(patch) }))
+            }
+            Object.assign(panelOverrides, v.values)
             // 落盘失败要如实回报：以前无论成败都回 200 + 设置，面板显示「已保存」但什么都没写。
             const ok = flushPanelFile()
             refreshBlock()
@@ -1041,7 +1225,7 @@ export function apply(ctx, configIn) {
             const r = await reflectNow({ force: true })
             return json(res, { ...r, why: r?.why ?? 'unknown', lastWhy: lastReflectWhy })
           }
-          return json(res, { lastWhy: lastReflectWhy, lastAt: lastReflectAt })
+          return json(res, { lastWhy: lastReflectWhy, lastAt: lastReflectAt, lastGate: lastReflectGate, lastRaw: lastReflectRaw })
         }
         if (url.startsWith('/dsh-longing/api/diary')) {
           if (req.method === 'POST') {
@@ -1060,7 +1244,7 @@ export function apply(ctx, configIn) {
         if (url.startsWith('/dsh-longing/api/event')) {
           if (req.method === 'POST') {
             const p = await body(req)
-            return json(res, fireEvent(p?.name))
+            return json(res, fireEvent(p?.name, { detail: p?.detail, src: 'panel' }))
           }
           return json(res, {
             events: Object.fromEntries(Object.entries(EVENTS).map(([k, v]) => [k, { note: v.note, dims: v.dims }])),
@@ -1210,7 +1394,12 @@ export function apply(ctx, configIn) {
         parameters: {
           type: 'object',
           properties: {
-            action: { type: 'string', enum: ['get', 'set', 'bump', 'preset', 'pause', 'event', 'events', 'diary', 'thought'] },
+            // 2026-11-10（审计 F16）：reflect 以前有实现却不在 enum 里 —— 模型永远调不到。
+            action: { type: 'string', enum: ['get', 'set', 'bump', 'preset', 'pause', 'event', 'events', 'diary', 'thought', 'reflect'] },
+          detail: {
+            type: 'string',
+            description: '配 action=event 用：他刚才说的那句原话（不超过 80 字）。日记要写事实，靠的就是这个；不填就只留事件类型。',
+          },
             lust: { type: 'number' },
             lewd: { type: 'number' },
             possess: { type: 'number' },
@@ -1222,6 +1411,7 @@ export function apply(ctx, configIn) {
             name: { type: 'string' },
             text: { type: 'string' },
             minutes: { type: 'number' },
+            days: { type: 'number', description: '配 action=diary 用：读最近几天（默认 3）' },
           },
           required: ['action'],
         },
@@ -1271,7 +1461,7 @@ export function apply(ctx, configIn) {
             return { ok: true, text: '记下了。' }
           }
           if (action === 'event') {
-            const r = fireEvent(args?.name)
+            const r = fireEvent(args?.name, { detail: args?.detail, src: 'tool' })
             return { ok: r.ok, text: r.text }
           }
           // 直接改值属于调试功能：关着的时候数值只能靠聊天事件养

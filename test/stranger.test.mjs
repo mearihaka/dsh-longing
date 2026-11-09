@@ -95,10 +95,32 @@ test('面板上每个配置控件 POST 之后都能读回同一个值', async ()
   )
   assert.ok(keys.length > 50, `应该覆盖几十个键，实际只取了 ${keys.length}`)
 
+  // 2026-11-10（审计 F03）：配置 POST 现在走 schema —— 超出 min/max 会 400，
+  // 所以这里按面板控件自己的 min/max 取一个合法值，而不是一律塞 7。
+  const inputs = new Map()
+  for (const m of html.matchAll(/<(?:input|textarea)([^>]*)>/g)) {
+    const id = /\bid="([a-zA-Z]\w*)"/.exec(m[1])?.[1]
+    if (!id) continue
+    inputs.set(id, {
+      min: Number(/\bmin="(-?[\d.]+)"/.exec(m[1])?.[1] ?? NaN),
+      max: Number(/\bmax="(-?[\d.]+)"/.exec(m[1])?.[1] ?? NaN),
+    })
+  }
   const want = {}
   for (const k of keys) {
     const v = before.json[k]
-    want[k] = typeof v === 'boolean' ? !v : typeof v === 'number' ? 7 : 'audit-value'
+    if (typeof v === 'boolean') {
+      want[k] = !v
+    } else if (typeof v === 'number') {
+      const lim = inputs.get(k) ?? {}
+      const lo = Number.isFinite(lim.min) ? lim.min : Math.min(v, 7)
+      const hi = Number.isFinite(lim.max) ? lim.max : Math.max(v, 7)
+      // 取一个落在区间内、且和当前值不同的整数
+      const pick = v !== lo ? lo : Math.min(hi, lo + 1)
+      want[k] = pick
+    } else {
+      want[k] = 'audit-value'
+    }
   }
   const saved = await call('POST', '/dsh-longing/api/config', want)
   assert.equal(saved.code, 200)
@@ -251,9 +273,9 @@ test('调用方只给几个键，也要得到全部默认值', async () => {
   const { call } = boot() // boot 只传了 comfyEnabled / peakWindow
   const cfg = await call('GET', '/dsh-longing/api/config')
   const keys = Object.keys(cfg.json ?? {}).filter((k) => !k.startsWith('__'))
-  // schema 共 102 项（1.13.0 加 7 个 curio*，11-07 加 nsfwEnabled，11-08 加 10 个 diary*），
-  // 其中 8 项是「七维 + scene 的初始值」，属状态、API 不返回 → 94
-  assert.equal(keys.length, 94, `实际 ${keys.length} 项`)
+  // schema 共 103 项（1.13.0 加 7 个 curio*，11-07 加 nsfwEnabled，11-08 加 10 个 diary*，
+  // 11-09 加 ownerRef），其中 8 项是「七维 + scene 的初始值」，属状态、API 不返回 → 95
+  assert.equal(keys.length, 95, `实际 ${keys.length} 项`)
   assert.ok('personaName' in cfg.json && 'proactivePerHour' in cfg.json)
   assert.ok(!('lust' in cfg.json) && !('scene' in cfg.json), '状态键不该出现在配置接口里')
 })

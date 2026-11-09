@@ -124,6 +124,9 @@
 
   <div class="card" id="eventCard">
     <h2>刚刚发生了什么（点一下记一次）</h2>
+    <div class="bar" style="margin-bottom:10px">
+      <input type="text" id="evDetail" placeholder="补一句：刚刚具体说了什么（可空；填了会进她日记里的事实）" style="flex:1" />
+    </div>
     <div class="grid">
       <div>
         <div class="muted" style="margin-bottom:8px">好的</div>
@@ -299,6 +302,9 @@
 <script>
 const API = '/dsh-longing/api'
 const $ = (id) => document.getElementById(id)
+// 面板里有几处 innerHTML 拼的是外部字符串（搜索结果标题、判据原因）。
+// 2026-11-9 审查：唯一能到手的 XSS 面就在这，统一过一个转义。
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 let TOKEN = sessionStorage.getItem('desireToken') || ''
 // 2026-11-04：桌面快捷键带 ?token=… 直接进来，省得每次粘令牌。
 // 只从本机 URL 里读，token 仍是本地文件里那一串；读完顺手记进 sessionStorage。
@@ -372,11 +378,15 @@ const EV_GOOD = ['praise','comfort','intimate','desire','protect','apologize','p
 const EV_BAD = ['cold','reject','ignore','mentionOther','compare','blame','lie','leave','force','bodyShame','neglect']
 
 async function fireEvent(name){
-  const r = await jpost(API+'/event', { name })
+  // 2026-11-09（私有定制 B）：带一句原话，日记里才有「他到底说了什么」
+  const box = $('evDetail')
+  const detail = ((box && box.value) || '').trim()
+  const r = await jpost(API+'/event', { name, detail })
   const el = $('evMsg')
   if (r && r.ok) {
     el.textContent = r.text
     el.className = 'muted ok'
+    if (box) box.value = ''
     await loadState()
   } else {
     el.textContent = r?.text || '没生效'
@@ -406,9 +416,12 @@ function buildEventButtons(){
 function renderCurio(){
   const el = $('curioNow'); if (!el) return
   const curio = Math.round(Number(state.curio) || 0)
-  const at = Number(state.curioSearchAt ?? 0) || 65
+  // 2026-11-10（审计 F19）：curioSearchAt / curioPerDay 是**配置**，不在 state 里。
+  // 以前从 state 读，永远拿到 undefined → 面板一直显示默认的 65/6，
+  // 用户把门槛改成 30 也看不出来（还以为是心跳没跑）。
+  const at = Number(cfg.curioSearchAt ?? 0) || 65
   const log = Array.isArray(state.searchLog) ? state.searchLog.filter((t) => Date.now() - t < 86400000) : []
-  const perDay = Number(state.curioPerDay ?? 0) || 6
+  const perDay = Number(cfg.curioPerDay ?? 0) || 6
   const left = Math.max(0, perDay - log.length)
   const last = Number(state.lastSearchAt) || 0
   const ago = (t) => {
@@ -430,7 +443,7 @@ function renderCurio(){
     `<div>好奇心 <span style="font-family:monospace">${bar}</span> ${curio}/100（门槛 ${at}）${head}</div>` +
     `<div style="margin-top:4px">今天已搜 ${log.length}/${perDay === 0 ? '∞' : perDay} 次｜上次 ${ago(last)}</div>` +
     (topicFresh
-      ? `<div style="margin-top:4px">手上还挂着一件没说出口的：<b>${String(topic.title || '').slice(0, 50)}</b>（${ago(Number(topic.at) || 0)}搜到的）</div>`
+      ? `<div style="margin-top:4px">手上还挂着一件没说出口的：<b>${esc(String(topic.title || '').slice(0, 50))}</b>（${ago(Number(topic.at) || 0)}搜到的）</div>`
       : `<div style="margin-top:4px" class="muted">手上没有待说的话题</div>`) +
     (left === 0 && perDay > 0 ? `<div style="margin-top:4px" class="warn">今天的额度用完了，她到明天才会再搜</div>` : '')
 }
@@ -450,7 +463,7 @@ function renderGates(){
     const mark = u.ok
       ? '<span class="ok">✓</span>'
       : `<span class="warn">差 ${u.gap}</span>`
-    return `<div>${mark}　${u.name}</div>`
+    return `<div>${mark}　${esc(u.name)}</div>`
   }).join('')
 }
 
@@ -469,8 +482,8 @@ function renderProactive(){
   const img = state.image || null
   const IMG_WHY = { off: '总开关关着', autooff: '「允许她主动开口」没勾', never: '还没聊过', paused: '暂停中', daily: '今天发满了', low: '性欲+色情还不够', inactive: '不在活跃时段', quiet: '安静时段' }
   const imgLine = !img ? '' : `<div style="margin-top:4px">${img.allowed
-    ? `<span class="ok">✓ 可以主动发图</span>：${img.kindLabel}｜今天 ${img.usedToday}/${img.limitToday === 0 ? '∞' : img.limitToday}｜分数 ${img.score}/${img.threshold}`
-    : `<span class="muted">主动发图：${IMG_WHY[img.reason] || img.reason}（分数 ${img.score}/${img.threshold}）</span>`}</div>`
+    ? `<span class="ok">✓ 可以主动发图</span>：${esc(img.kindLabel)}｜今天 ${img.usedToday}/${img.limitToday === 0 ? '∞' : img.limitToday}｜分数 ${img.score}/${img.threshold}`
+    : `<span class="muted">主动发图：${esc(IMG_WHY[img.reason] || img.reason)}（分数 ${img.score}/${img.threshold}）</span>`}</div>`
   if (p.allowed){
     el.innerHTML = `<span class="ok">✓ 此刻她可以主动</span>　${used}　${cold}　档位 ${p.tier}` + imgLine
     return
@@ -486,13 +499,13 @@ function renderProactive(){
     cooldown: '离上一次主动太近',
     hourly: '这一小时的次数用满了',
     daily: '今天的次数用满了',
-  }[p.reason] || p.reason
+  }[p.reason] || esc(p.reason)
   let next = ''
   if (Number(p.nextAt) > Date.now()){
     const m = Math.max(1, Math.round((Number(p.nextAt) - Date.now()) / 60000))
     next = `　最早 ${m} 分钟后`
   }
-  el.innerHTML = `<span class="warn">× 此刻不能主动</span>　因为：${why}${next}　${used}　${cold}` + imgLine
+  el.innerHTML = `<span class="warn">× 此刻不能主动</span>　因为：${esc(why)}${next}　${used}　${cold}` + imgLine
 }
 
 function renderCaps(){
@@ -578,9 +591,32 @@ async function loadDiary(){
     $('diaryBody').textContent = days.length
       ? days.map(day => {
           const lines = [`${day.date}　心情 ${Math.round(Number(day.mood) || 50)}`]
-          if (day.up && day.up.length) lines.push('　高兴：' + day.up.map(e => e.note).join('；'))
-          if (day.down && day.down.length) lines.push('　难受：' + day.down.map(e => e.note).join('；'))
-          if (day.thoughts && day.thoughts.length) lines.push('　心里：' + day.thoughts.map(e => e.text).join('；'))
+          // 2026-11-9：日记正文只放**她自己写的句子**。事件原本是背景，以前把它们按条摊开，
+          // 于是同一条「刚被夸过一句」能刷满一屏，看着像复读机。
+          // 现在：她写的在上、逐条一行；事件压成最后一行计数，同一条合并成 ×N。
+          const merge = (list) => {
+            const order = []
+            const count = new Map()
+            for (const e of (list || [])) {
+              const text = String(e?.detail || e?.note || '').trim()
+              if (!text) continue
+              if (!count.has(text)) {
+                order.push(text)
+                count.set(text, 0)
+              }
+              count.set(text, count.get(text) + Math.max(1, Number(e?.n) || 1))
+            }
+            return order.map(t => (count.get(t) > 1 ? `${t} ×${count.get(t)}` : t)).join('；')
+          }
+          const wrote = (day.thoughts || []).map(e => String(e?.text || '').trim()).filter(Boolean)
+          if (wrote.length) {
+            lines.push('　她写的：')
+            for (const t of wrote) lines.push('　　' + t)
+          } else {
+            lines.push('　她写的：（那天没写）')
+          }
+          // 2026-11-9：面板不再摆固定文案。日记就是她写的那几句话。
+          // 事件仍然记着（它决定数值和心情分），只是不在这里冒充日记正文。
           return lines.join('\n')
         }).join('\n\n')
       : '还没有记录。'
@@ -669,9 +705,18 @@ $('diaryReflect').onclick = async () => {
     const ok = !!(r && r.ok)
     $('diaryMsg').textContent = ok
       ? '写下了：' + ((r.lines || []).join(' / '))
-      : (why[r && r.why] || ('没写成：' + ((r && r.why) || 'unknown')))
+      : (r && r.why === 'reasoning-only'
+        ? '模型把额度全用在思考上了，一个字正文都没吐。把「写日记的 token 上限」调大（现在 260 太小），或者换个不推理的模型。'
+        : r && r.why === 'empty' && r.raw
+        ? '模型返回了，但一句都没留下：' + r.raw.slice(0, 80)
+        : (why[r && r.why] || ('没写成：' + ((r && r.why) || 'unknown'))))
     $('diaryMsg').className = 'muted ' + (ok ? 'ok' : 'warn')
     if (ok) loadDiary()
+  } catch (e) {
+    // 2026-11-9：DSH 重启后端口会变（61974 → 63777），旧标签页点这个按钮请求直接失败；
+    // 原来没有 catch，界面一直停在「她正在写…」，看起来像她写不出来。
+    $('diaryMsg').textContent = '没连上插件接口（' + (e && e.message ? e.message : e) + '）。DSH 重启后端口会变，刷新这个页面再试。'
+    $('diaryMsg').className = 'muted warn'
   } finally {
     btn.disabled = false
   }
@@ -692,7 +737,17 @@ $('saveCfg').onclick = async ()=>{
       // 空着就别写：Number('') === 0，把「每小时衰减」清空会变成 0，
       // 整条时间曲线当场停摆，症状和 1.0.0 那个 bug 一模一样。
       if (el.type !== 'checkbox' && String(el.value).trim() === '') continue
-      patch[k] = el.type === 'checkbox' ? el.checked : (el.type === 'number' ? Number(el.value) : el.value)
+      // 2026-11-10（审计 F03）：服务端现在会按 schema 校验，超范围直接 400。
+    // 面板这头先按控件自己的 min/max 夹住 —— 手输 999 不该变成一个看不懂的报错。
+    if (el.type === 'number') {
+      let n = Number(el.value)
+      if (!Number.isFinite(n)) n = Number(el.min || 0)
+      const lo = el.min === '' ? -Infinity : Number(el.min)
+      const hi = el.max === '' ? Infinity : Number(el.max)
+      patch[k] = Math.min(hi, Math.max(lo, n))
+    } else {
+      patch[k] = el.type === 'checkbox' ? el.checked : el.value
+    }
     }
     const chBoxes = ['qq','bili','web'].map(c=>$('ch-'+c)).filter(Boolean)
     if (chBoxes.length) patch.channels = ['qq','bili','web'].filter(c=>$('ch-'+c)?.checked)

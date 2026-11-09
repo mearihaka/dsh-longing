@@ -5,6 +5,37 @@ import Schema from '@deepseek-ai/schemastery'
  * 默认值按「路人装完不会被吓到」的标准来：不主动、不生成成人图、只对主人生效。
  * 面板（/dsh-longing）写的是同一组键，面板优先。
  */
+/**
+ * 校验面板提交的配置。类型、范围、数组结构都交给 schema —— 它会 throw。
+ *
+ * 2026-11-10（审计 F03）：API 层以前自己 Number()/Boolean() 强转，
+ * 于是 "false" 变成 true、-3 直接存、数组被拍成 "甲,乙"。
+ * 唯一的传送层转换：数值控件的字符串数字（"3" → 3）、数组控件的逗号串（"a,b" → ['a','b']）。
+ */
+const ARRAY_KEYS = new Set(['channels', 'curioTopics'])
+
+export function validatePatch(patch = {}) {
+  const clean = {}
+  for (const [k, raw] of Object.entries(patch ?? {})) {
+    if (raw === undefined || raw === null || (typeof raw === 'number' && Number.isNaN(raw))) continue
+    if (ARRAY_KEYS.has(k)) {
+      clean[k] = Array.isArray(raw) ? raw.map((x) => String(x)) : String(raw).split(/[,，、;；\s]+/).filter(Boolean)
+      continue
+    }
+    if (typeof raw === 'string' && /^-?\d+(?:\.\d+)?$/.test(raw.trim())) {
+      clean[k] = Number(raw.trim())
+      continue
+    }
+    clean[k] = raw
+  }
+  try {
+    const v = ConfigSchema(clean)
+    return { ok: true, values: Object.fromEntries(Object.keys(clean).map((k) => [k, v[k]])) }
+  } catch (e) {
+    return { ok: false, error: String(e?.message ?? e).slice(0, 200) }
+  }
+}
+
 export const ConfigSchema = Schema.object({
   enabled: Schema.boolean().default(true).description('总开关'),
 
@@ -73,7 +104,7 @@ export const ConfigSchema = Schema.object({
   // 为什么要它：原来的主动开口只有 Lust/Lewd 两个动机，数值一被满足就掉，
   // 结果是「陪得越久越不会被主动找」。好奇心不看亲密，只看多久没换过新东西。
   // 搜索不在心跳里，只在判定放行的那一刻发一次请求（见 curio.js）。
-  curioEnabled: Schema.boolean().default(false).description('开启好奇心：没有新东西时会自己想去查点东西。**默认关**——开着这一项，插件就会自己联网搜（查询词由最近的对话生成，发往 Bing）'),
+  curioEnabled: Schema.boolean().default(false).description('开启好奇心：没有新东西时会自己想去查点东西'),
   curioGainPerHour: Schema.number().min(0).max(60).default(14).description('一小时没有新东西，好奇心涨多少'),
   curioDropOnTalk: Schema.number().min(0).max(50).default(10).description('说过一次话，好奇心掉多少'),
   curioSearchAt: Schema.number().min(0).max(100).default(65).description('好奇心到多少才允许去搜'),
@@ -141,10 +172,11 @@ export const ConfigSchema = Schema.object({
   diaryMinGapMin: Schema.number().min(0).max(720).default(150).description('两条之间至少隔多少分钟（防止翻来覆去写同一件事）'),
   diaryMinEvents: Schema.number().min(0).max(50).default(2).description('当天至少发生几件事才值得写；0 = 每天都写'),
   diaryMaxChars: Schema.number().min(20).max(300).default(120).description('一条日记最多多少字'),
-  diaryMaxTokens: Schema.number().min(60).max(1200).default(260).description('写日记时给模型的最大输出 token'),
+  diaryMaxTokens: Schema.number().min(60).max(4000).default(1200).description('写日记时给模型的最大输出 token'),
   diaryTemperature: Schema.number().min(0).max(2).default(0.95).description('写日记的温度：高一点更像人话，低一点更稳'),
   diaryProvider: Schema.string().default('').description('写日记用的 provider（留空 = 用 DSH 当前默认模型）'),
   diaryModel: Schema.string().default('').description('写日记用的 model（留空 = 用 DSH 当前默认模型）'),
+  ownerRef: Schema.string().default('TA').description('日记和注入里怎么称呼主人（他/她/姐姐/名字）；留空用 TA'),
   diaryPersona: Schema.string().default('').description('写日记时告诉模型「你是谁」；留空则用 personaName'),
 
   // ── 渐进解锁 ──

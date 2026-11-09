@@ -133,7 +133,9 @@ for (const file of imageFiles) {
   if (ascii.includes('Exif')) problems.push('EXIF 段')
   if (/http:\/\/ns\.adobe\.com\/xap/.test(ascii)) problems.push('XMP 段')
   if (/[A-Za-z]:[\\/]{1,2}Users[\\/]{1,2}[A-Za-z0-9_.-]+/.test(ascii)) problems.push('本机路径')
-  if (/\b(USERNAME|harness-workspace)\b/.test(ascii)) problems.push('本机用户名')
+  // 2026-11-9 审查：这里原来写死了本机用户名，等于把要藏的东西贴在最外层。
+  // 换成通用规则：C:\Users\<name> / /home/<name> / ~\<name> 这类本机路径一律算命中。
+  if (/[A-Za-z]:[\\/]Users[\\/][^\\/\s"']+/i.test(ascii) || /\/home\/[^\/\s"']+/.test(ascii)) problems.push('本机用户路径')
   if (problems.length) {
     console.log(`✗ 图片元数据  ${relative(ROOT, file)}  含 ${problems.join(' / ')}`)
     hits++

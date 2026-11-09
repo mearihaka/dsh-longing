@@ -21,15 +21,33 @@ export function pick(arr, seed) {
 }
 
 // ── 常态处境：抽出来拼成一句具体场景 ──
-const WHEN = [
-  '这会儿刚过午夜',
-  '午后阳光斜进来',
-  '外面在下雨',
-  '天刚擦黑',
-  '屋里只开着台灯',
-  '清早，屋里还没亮透',
-  '下午最闷的时候',
-]
+// 2026-11-08：时间段必须按**真实钟点**选。以前整池随机，于是 16:33 的注入里写着
+// 「这会儿刚过午夜，你在厨房等他」—— 下午说半夜，说的话和现实对不上。
+// 「外面在下雨」也从池子里拿掉了：没有天气数据，就不该凭空断言天气。
+const WHEN_BY_HOUR = {
+  night: ['夜里，屋里只开着台灯', '这会儿刚过午夜'],
+  dawn: ['天快亮了，屋里还是灰的', '清早，屋里还没亮透'],
+  morning: ['上午的光从窗帘缝里漏进来', '上午，屋里有点闷'],
+  noon: ['正午，光直直地压在地板上'],
+  afternoon: ['午后阳光斜进来', '下午最闷的时候'],
+  dusk: ['天刚擦黑', '傍晚，灯还没开'],
+}
+
+/**
+ * 真实钟点 → 时段桶。
+ * @param {number} hour 0-23
+ * @returns {'night'|'dawn'|'morning'|'noon'|'afternoon'|'dusk'}
+ */
+export function hourBucket(hour) {
+  const h = ((Number(hour) % 24) + 24) % 24
+  if (h < 5) return 'night'
+  if (h < 9) return 'dawn'
+  if (h < 12) return 'morning'
+  if (h < 15) return 'noon'
+  if (h < 18) return 'afternoon'
+  if (h < 21) return 'dusk'
+  return 'night'
+}
 
 const WHERE = [
   '在他桌边',
@@ -127,10 +145,10 @@ export const VARIANTS = {
 
 /**
  * 拼「现在是什么处境」的一行。
- * @param {object} o { lust, lewd, seed, scene }
+ * @param {object} o { lust, lewd, seed, scene, now }
  * @returns {{ sceneLine: string, cold: boolean }}
  */
-export function sceneOf({ lust = 0, lewd = 0, seed = 1, scene = '' }) {
+export function sceneOf({ lust = 0, lewd = 0, seed = 1, scene = '', now = Date.now() }) {
   // 身体和界限都冷 → 走冷档；否则给具体处境
   const cold = lust <= 22 && lewd <= 25
   if (cold) {
@@ -140,7 +158,8 @@ export function sceneOf({ lust = 0, lewd = 0, seed = 1, scene = '' }) {
     }
   }
   // 用户在面板里填了场景就用它，没有就随机拼一个
-  const place = scene ? `在${scene}` : `${pick(WHEN, seed + 1)}，你${pick(WHERE, seed + 2)}，${pick(DOING, seed + 3)}`
+  const whens = WHEN_BY_HOUR[hourBucket(new Date(now).getHours())]
+  const place = scene ? `在${scene}` : `${pick(whens, seed + 1)}，你${pick(WHERE, seed + 2)}，${pick(DOING, seed + 3)}`
   return { cold: false, sceneLine: `${place}\n${pick(BODY, seed + 4)}` }
 }
 

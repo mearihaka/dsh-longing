@@ -58,7 +58,8 @@ export function tierOf(state, cfg) {
 
 function readLog(state) {
   const raw = Array.isArray(state?.proactiveLog) ? state.proactiveLog : []
-  return raw.map(Number).filter((t) => Number.isFinite(t) && t > 0).sort((a, b) => a - b).slice(-64)
+  // 2026-11-10（审计 F08）：日额度能配到 720，账本只留 64 条就永远到不了门槛
+  return raw.map(Number).filter((t) => Number.isFinite(t) && t > 0).sort((a, b) => a - b).slice(-1024)
 }
 
 /**
@@ -115,6 +116,7 @@ export function proactiveGate({ cfg = {}, state = {}, now = Date.now() } = {}) {
   }
   const deny = (reason, nextAt = 0) => ({ ...out, allowed: false, reason, nextAt })
 
+  if (cfg?.enabled === false) return deny('off')
   if (cfg?.autoInitiate !== true) return deny('off')
   if (num(state?.pausedUntil, 0) > now) return deny('paused', num(state.pausedUntil, 0))
   if (state?.everContacted !== true) return deny('never')
@@ -166,7 +168,7 @@ export function proactiveGate({ cfg = {}, state = {}, now = Date.now() } = {}) {
 
 /** 真的说出口之后记一笔（通道插件在投递成功后调）。返回要并回 state 的字段。 */
 export function noteInitiate({ state = {}, now = Date.now(), info = null } = {}) {
-  const log = [...readLog(state), now].slice(-64)
+  const log = [...readLog(state), now].slice(-1024)
   const patch = { proactiveLog: log, lastInitiateAt: now }
   // 留个痕：谁执行的、当时什么档位，面板和日记都能用上
   if (info && typeof info === 'object') patch.lastInitiateInfo = { ...info, t: now }
