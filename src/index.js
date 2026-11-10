@@ -885,10 +885,18 @@ export function apply(ctx, configIn) {
     // tone 必须是 good/bad：stop 的 tone 是空串（它只让插件暂停），不该进锚点。
     {
       const tone = EVENTS[key]?.tone
+      // 2026-11-10（审计 A06）：锚点开关 + 三个参数从 settings 读。
+      // 关掉只影响「回想」，记账（日记）照常 —— 两件事本来就该分开。
+      const anchorCfg = settings() ?? {}
       const strength = anchorStrength(EVENTS[key]?.dims)
-      if (tone && strength > 0) state.anchors = addAnchor(state.anchors, key, tone, strength, Date.now(), detail)
+      if (anchorCfg?.anchorEnabled !== false && tone && strength > 0) {
+        state.anchors = addAnchor(state.anchors, key, tone, strength, Date.now(), detail, {
+          halfLifeMs: num(anchorCfg?.anchorHalfLifeDays, 5) * 86_400_000,
+          maxTotal: num(anchorCfg?.anchorMaxTotal, 12),
+          minStrength: num(anchorCfg?.anchorMinStrength, 0.8),
+        })
+      }
     }
-    // 顺手记进当天的日记：好的进「让我高兴的」，坏的进「让我难受的」
     diary = recordEvent(diary, { name: key, note: r.note, tone: r.tone, detail, src, now: Date.now() })
     saveDiary()
     writeJson(stateFile, snapState(), logger)
@@ -956,6 +964,8 @@ export function apply(ctx, configIn) {
     // 认不出的不硬凑（宁可漏判），交给模型自己调 action=event。
     // fireEvent 自带 30 秒同类去重，通道那边也调一次的话不会记两遍。
     if (text) {
+      // 2026-11-10（审计 A06）：开关 + 安全词都从当前设置读，不用缓存。
+      const settingNow = settings() ?? {}
       // 2026-11-10（审计 F27）：「嗯 / 哦 / 啊」这种整句语气词不记事件，
       // 但要留个痕迹 —— behavior.js 的 flatFactor 按它把精力压一档。
       // 原来 isFlatReply 导出了却零调用，注释和 CHANGELOG 承诺的行为只有一半。
@@ -963,7 +973,11 @@ export function apply(ctx, configIn) {
         if (isFlatReply(text)) state.flatAt = Date.now()
       } catch { /* 判不出来不算错 */ }
       try {
-        const ev = detectAndRefine(text, String(settings()?.pauseWord ?? '停').trim())
+        // 2026-11-10（审计 A06）：开关。关掉之后只有模型自己调 action=event 才记账 ——
+        // 路人装上去不想让每句话都改数值时用这个，而不是把自己整个插件关掉。
+        const ev = settingNow?.autoEventEnabled === false
+          ? null
+          : detectAndRefine(text, String(settingNow?.pauseWord ?? '可克课科').trim())
         if (ev) fireEvent(ev, { detail: String(text).slice(0, 80), src: 'channel' })
       } catch {
         // 认事件失败不影响聊天

@@ -233,7 +233,7 @@ node --test --test-concurrency=1
     debugMode: true                               # 想直接拖滑块改数值时
 ```
 
-### 7.3 配置项总表（schema 103 项；`GET /api/config` 返回 95 项）
+### 7.3 配置项总表（schema 108 项；`GET /api/config` 返回 100 项）
 
 下面 102 项是 `src/config.js` 里声明的全部配置。其中 8 项（`lust / lewd / possess / shame / resist /
 fatigue / affection / scene`）是**初始数值**，属状态、面板和 API 都不返回（见 4.4），所以

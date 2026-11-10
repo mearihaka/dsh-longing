@@ -275,7 +275,9 @@ test('调用方只给几个键，也要得到全部默认值', async () => {
   const keys = Object.keys(cfg.json ?? {}).filter((k) => !k.startsWith('__'))
   // schema 共 103 项（1.13.0 加 7 个 curio*，11-07 加 nsfwEnabled，11-08 加 10 个 diary*，
   // 11-09 加 ownerRef），其中 8 项是「七维 + scene 的初始值」，属状态、API 不返回 → 95
-  assert.equal(keys.length, 95, `实际 ${keys.length} 项`)
+  // 2026-11-10（审计 A06）：加了 autoEventEnabled / anchorEnabled +
+  // 三个锚点参数，103 → 108，API 95 → 100
+  assert.equal(keys.length, 100, `实际 ${keys.length} 项`)
   assert.ok('personaName' in cfg.json && 'proactivePerHour' in cfg.json)
   assert.ok(!('lust' in cfg.json) && !('scene' in cfg.json), '状态键不该出现在配置接口里')
 })

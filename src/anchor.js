@@ -66,15 +66,18 @@ export function anchorStrength(dims) {
  * @param {number} now     当前时间戳
  * @returns {Array} 新的 anchors（已按强度和时间裁剪）
  */
-export function addAnchor(anchors, name, tone, strength, now = Date.now(), detail = '') {
+export function addAnchor(anchors, name, tone, strength, now = Date.now(), detail = '', opts = {}) {
+  // 2026-11-10（审计 A06）：opts 让调用方能配半衰期 / 上限 / 门槛，
+  // 不传就是原来的常量 —— 老调用点（测试、recall）一行不用改。
+  const minStrength = Number(opts?.minStrength) > 0 ? Number(opts.minStrength) : MIN_STRENGTH
   const list = Array.isArray(anchors) ? anchors.slice() : []
-  if (!name || !(strength >= MIN_STRENGTH)) return pruneAnchors(list, now)
+  if (!name || !(strength >= minStrength)) return pruneAnchors(list, now, opts)
   // 2026-11-10：tone 必须是 good 或 bad。
   // stop 的 tone 是空字符串（它不算好也不算坏，只让插件暂停），
   // 原来的 `tone === 'good' ? 'good' : 'bad'` 会把空串当 'bad'，
   // 而 stop 的强度 26 是所有事件里最高的 —— 安全词会变成最重的负面锚点。
   // fireEvent 那边已经挡了一道，这里再挡一道，免得别的调用点绕过去。
-  if (tone !== 'good' && tone !== 'bad') return pruneAnchors(list, now)
+  if (tone !== 'good' && tone !== 'bad') return pruneAnchors(list, now, opts)
 
   const key = String(name)
   // 2026-11-10（外部审计）：原话要先压掉空白字符，不然带换行会把一条拆成两行。
@@ -91,14 +94,14 @@ export function addAnchor(anchors, name, tone, strength, now = Date.now(), detai
       // leave(6.8) 在 4.9 天后衰减到 3.4，只要再来一条弱同名事件（强度 2）就把 at 刷成 now、
       // strength 回到 6.8。同一件事 5 天内出现一次，强度就恒等于历史最高值，永不衰减。
       // 改成按**衰减后的现值**取 max：重复事件只能「续命」，不能「回满」。
-      strength: Math.max(decayedStrength(list[idx], now), strength),
+      strength: Math.max(decayedStrength(list[idx], now, opts?.halfLifeMs), strength),
       detail: said || String(list[idx]?.detail ?? ''),
     }
-    return pruneAnchors(list, now)
+    return pruneAnchors(list, now, opts)
   }
 
   list.push({ name: key, tone: tone === 'good' ? 'good' : 'bad', at: now, strength, detail: said })
-  return pruneAnchors(list, now)
+  return pruneAnchors(list, now, opts)
 }
 
 /**
@@ -106,11 +109,13 @@ export function addAnchor(anchors, name, tone, strength, now = Date.now(), detai
  * @param {object} anchor {at, strength}
  * @param {number} now
  */
-export function decayedStrength(anchor, now = Date.now()) {
+export function decayedStrength(anchor, now = Date.now(), halfLifeMs = HALF_LIFE_MS) {
   const base = Number(anchor?.strength) || 0
   if (!(base > 0)) return 0
   const age = Math.max(0, now - (Number(anchor?.at) || 0))
-  const halfLives = age / HALF_LIFE_MS
+  // 2026-11-10（审计 A06）：半衰期可配。默认还是 5 天。
+  const hl = Number(halfLifeMs) > 0 ? Number(halfLifeMs) : HALF_LIFE_MS
+  const halfLives = age / hl
   return Math.round(base * Math.pow(0.5, halfLives) * 100) / 100
 }
 
@@ -118,18 +123,24 @@ export function decayedStrength(anchor, now = Date.now()) {
  * 裁掉衰减到没意义的、超出上限的。
  * 正的负的各留 MAX_PER_TONE 个，总数不超过 MAX_TOTAL，按「现在的强度」排。
  */
-export function pruneAnchors(anchors, now = Date.now()) {
+export function pruneAnchors(anchors, now = Date.now(), opts = {}) {
+  const maxTotal = Math.max(1, Math.min(40, Number(opts?.maxTotal) || MAX_TOTAL))
+  const minStrength = Number(opts?.minStrength) > 0 ? Number(opts.minStrength) : MIN_STRENGTH
+  const halfLifeMs = Number(opts?.halfLifeMs) > 0 ? Number(opts.halfLifeMs) : HALF_LIFE_MS
+  // 单边上限按总上限的一半算，至少 4 —— 允许配成 40 条时两边各留 20
+  const perToneMax = Math.max(4, Math.ceil(maxTotal / 2))
+
   const list = (Array.isArray(anchors) ? anchors : [])
-    .filter((a) => a && a.name && decayedStrength(a, now) >= MIN_STRENGTH * 0.35)
-    .map((a) => ({ ...a, decayed: decayedStrength(a, now) }))
+    .filter((a) => a && a.name && decayedStrength(a, now, halfLifeMs) >= minStrength * 0.35)
+    .map((a) => ({ ...a, decayed: decayedStrength(a, now, halfLifeMs) }))
     .sort((x, y) => y.decayed - x.decayed)
 
   const kept = []
   const perTone = { good: 0, bad: 0 }
   for (const a of list) {
     const tone = a.tone === 'good' ? 'good' : 'bad'
-    if (perTone[tone] >= MAX_PER_TONE) continue
-    if (kept.length >= MAX_TOTAL) break
+    if (perTone[tone] >= perToneMax) continue
+    if (kept.length >= maxTotal) break
     perTone[tone]++
     kept.push({ name: a.name, tone: a.tone, at: a.at, strength: a.strength, detail: a.detail ?? '' })
   }

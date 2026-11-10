@@ -228,6 +228,18 @@ export const ConfigSchema = Schema.object({
   // ── 安全 ──
   ownerOnly: Schema.boolean().default(true).description('只对主人生效（强烈建议保持开启）'),
   pauseWord: Schema.string().default('可克课科').description('安全词：说出后立刻降回平静'),
+
+    // ── 2026-11-10（审计 A06）：v1.15.0 三个新模块的开关 ──
+    autoEventEnabled: Schema.boolean().default(true)
+      .description('从原话里自动认事件（"你真烦"→记一笔）。关掉之后只有模型自己调 action=event 才记账'),
+    anchorEnabled: Schema.boolean().default(true)
+      .description('把事件留成锚点（5 天半衰期，action=recall source=anchor 能查到）。关掉只影响回忆，不影响记账'),
+    anchorHalfLifeDays: Schema.number().min(1).max(30).default(5)
+      .description('锚点半衰期（天）。越短忘得越快'),
+    anchorMinStrength: Schema.number().min(0.1).max(10).step(0.1).default(0.8)
+      .description('低于这个强度的事件不留锚点。gift 是 0.55，默认值会把它挡掉'),
+    anchorMaxTotal: Schema.number().min(1).max(40).default(12)
+      .description('锚点总上限。同名事件只刷新不叠加，所以 12 条大约记 12 件不同的事'),
   // pausedUntil 曾是这里的配置项，但运行时只认状态文件里的那一个（面板改它走 /api/pause），
   // 面板提交也会被 ALLOWED_KEYS 挡掉 —— 是个「看起来能配、坏了会误导人」的死键，删掉。
 
