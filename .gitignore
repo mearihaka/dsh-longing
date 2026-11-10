@@ -15,3 +15,5 @@ workspace/
 活动时间.json
 面板令牌.txt
 欲望注入*.txt
+*.bak-*
+*.bak.*
