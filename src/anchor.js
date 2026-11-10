@@ -11,6 +11,11 @@
  * 过了窗口就彻底忘。结果是「昨天被骂」和「一周前被骂」对她完全一样。
  * 锚点补的就是这一段：30 分钟到 5 天之间。
  *
+ * **锚点不进注入块。** 这是刻意的（2026-11-10）：
+ *   · 常驻每天花几十个 token，而且「最近心里有点：被冷了一下」反复出现会变成念稿；
+ *   · 需要的时候她自己调 `action=recall source=anchor` 查 —— 数据一直在 state.anchors 里。
+ * recall 的「还压在心上」就是从这里来的，强度 ≥2 才算「还压着」。
+ *
  * 和 recentEvents 的分工：
  *   recentEvents  30 分钟内   → 进注入块（「刚才的事还留在心里：…」），带情绪余温
  *   anchors       5 天半衰期  → 进上下文但更淡（「这阵子老是…」），改底色倾向
@@ -80,7 +85,11 @@ export function addAnchor(anchors, name, tone, strength, now = Date.now(), detai
       name: key,
       tone: tone === 'good' ? 'good' : 'bad',
       at: now,
-      strength: Math.max(Number(list[idx]?.strength) || 0, strength),
+      // 2026-11-10（审计 A05）：原来取的是**原始值**的 max，于是 5 天半衰期被「同名刷新」抵消 ——
+      // leave(6.8) 在 4.9 天后衰减到 3.4，只要再来一条弱同名事件（强度 2）就把 at 刷成 now、
+      // strength 回到 6.8。同一件事 5 天内出现一次，强度就恒等于历史最高值，永不衰减。
+      // 改成按**衰减后的现值**取 max：重复事件只能「续命」，不能「回满」。
+      strength: Math.max(decayedStrength(list[idx], now), strength),
       detail: said || String(list[idx]?.detail ?? ''),
     }
     return pruneAnchors(list, now)

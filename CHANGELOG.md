@@ -35,6 +35,9 @@
 
 锚点降级为「还压在心上」的标记：强度高说明这件事没淡。
 
+**锚点不进注入块** —— 她自己调 `source=anchor` 查。常驻会每天花掉几十个 token，
+而且「最近心里有点：被冷了一下」反复出现会变成念稿。
+
 参数：`since`（3h / 2d / 1w / 30m）· `tone`（good / bad）· `query`（关键词）·
 `source`（all / diary / anchor）· `limit`
 
@@ -82,7 +85,7 @@
 
 ### 测试
 
-148 条（smoke 13 / longing 67 / stranger 17 / mood-curio 33 / recall 18）。
+200 条（smoke 13 / longing 67 / stranger 17 / mood-curio 33 / recall 18 / reflect 24 / reflect-wiring 10 / audit 18）。
 新增 `test/recall.test.mjs` 18 条，固定 `now` 和 `Asia/Shanghai`，结果不随运行时间变化。
 
 ---
@@ -91,7 +94,7 @@
 
 ---
 
-## v1.14.5（日记重写 11-09 / 复审修复 11-10）
+
 
 ### 一、心情日记重写（11-09）
 

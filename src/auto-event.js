@@ -30,9 +30,18 @@ const MAX_LEN = 120
  *   - 夸奖/表白排中间，因为它们最容易被别的词误伤
  *   - 敷衍类（嗯/哦/随便）放最后，只认整句
  */
+// 事件的好/坏，用来决定要不要过否定门。只列会打痛的那几个 ——
+// 正向事件不需要守（praise 自己的正则有 (?<!不)）。
+const EVENT_TONE = {
+  cold: 'bad', reject: 'bad', ignore: 'bad', neglect: 'bad',
+  mentionOther: 'bad', compare: 'bad', blame: 'bad', lie: 'bad',
+  leave: 'bad', force: 'bad', bodyShame: 'bad',
+}
+
+
 const RULES = [
   // ── 关系级重击 ──
-  ['leave', /分手|再也不(理你|找你|来了)|别来找我|不要你了|滚吧|滚开/],
+  ['leave', /分手|再也不(理你|找你|来了)|别来找我|不要你了|滚吧|滚开|要走了|要走|我走/],
   ['lie', /骗我|骗人|撒谎|你在骗/],
   ['compare', /你看人家|人家都|学学人家|比不上人家|人家比你/],
   ['bodyShame', /你.{0,3}胖|身材(不行|差|一般)|该减肥了/],
@@ -74,9 +83,21 @@ const RULES = [
  */
 export function isSafetyWord(text, word) {
   const t = String(text ?? '').trim()
-  if (!word || !t || !t.startsWith(word)) return false
-  const tail = t.slice(word.length).replace(/[，,。.!！?？…~、\s]/g, '')
-  return tail.length <= 4
+  // 2026-11-10（审计 A04）：pauseWord 为空时安全词静默失效，没有任何提示。
+  // 回退到默认词，并让调用方能在日志里看见（这里只做回退，不动全局）。
+  const w = String(word ?? '').trim() || '可克课科'
+  if (!t || !t.startsWith(w)) return false
+
+  // 2026-11-10（审计 A04）：原来只看「尾巴 ≤ 4 字」，于是
+  // 「停下来想想」「停下来」「停一会儿」全部被判成安全词 → 插件静默半小时。
+  // 改成尾巴白名单：只认语气词和「一下」，其余一律不算。
+  //
+  // 代价：「停，别碰我」这种「安全词 + 后续内容」不中 —— 但那种情况下面
+  // 还有 force / reject 规则兜着，比「停下来想想 = 暂停半小时」安全得多。
+  const tail = t.slice(w.length).replace(/[，,。.!！?？…~、\s]/g, '')
+  if (!tail) return true
+  const SOFT_TAIL = /^(吧|啊|呀|哦|了|啦|呢|嘛|，|。|！|？|一下|好吗|好不好|行吗|好吗你|拜托)+$/
+  return SOFT_TAIL.test(tail)
 }
 
 /**
@@ -93,8 +114,53 @@ export function detectEvent(text, pauseWord = '停') {
   // pauseWord 从面板读，不硬编码 —— 档主换了词就该跟着换。
   if (isSafetyWord(t, pauseWord)) return 'stop'
 
-  for (const [name, re] of RULES) if (re.test(t)) return name
+  // 2026-11-10（审计 A03）：负面事件原来裸匹配，实测：
+  //   「谁要跟你分手啊，别说这个」 → leave（affection −5.6、锚点强度 6.8，记仇五天）
+  //   「如果哪天我们分手了会怎样」 → leave
+  //   「别夸我，没用」             → blame
+  // 而 detectAndRefine 在**每条**主人消息上跑，不需要模型同意。
+  // 所以负面规则要过一遍否定/假设门；正向规则不用（「不喜欢你」这种
+  // 已经由 praise 自己的 (?<!不) 处理了）。
+  for (const [name, re] of RULES) {
+    if (!re.test(t)) continue
+    const tone = EVENT_TONE[name]
+    if (tone === 'bad' && isHypotheticalOrNegated(t, re)) return null
+    return name
+  }
   return null
+}
+
+/**
+ * 这句话是不是在假设、反问、或者转述别人？
+ *
+ * 只看**命中位置之前**的 8 个字 —— 「谁要跟你分手啊」里的「谁要」在前，
+ * 「分手了会怎样」里的「会怎样」在后，前后都得看一点。
+ *
+ * @param {string} text
+ * @param {RegExp} re 已经命中过的规则
+ */
+function isHypotheticalOrNegated(text, re) {
+  const t = String(text ?? '')
+
+  // ① 疑问/假设：整句带这些词就不算事实
+  if (/[吗呢么][。.!！?？…~\s]*$/.test(t)) return true
+  if (/(如果|假如|要是|万一|哪天|会不会|怎样|怎么办|怎么可能|难道|谁说|谁要|谁跟你|别再说|不许说|不要说|别提)/.test(t)) return true
+
+  // ② 句首祈使的否定：「别夸我」「不要说了」—— 整句在否认，不是在陈述
+  if (/^(别|不要|不用|甭|少)/.test(t)) return true
+
+  // ③ 否定：**只看命中位置紧邻的 3 个字**。
+  //
+  // 原来是 8 个字，于是「我们不合适，分手吧」里「分手」前面 5 个字有个「不」，
+  // 被判成否定 —— 那是真实的分手信号，不能拦。
+  // 3 个字够挡住「不分手」这种紧贴的否定，又不会误伤「不合适」这种独立表达。
+  const m = re.exec(t)
+  if (m && m.index > 0) {
+    const before = t.slice(Math.max(0, m.index - 3), m.index)
+    // 但「不合适 / 不喜欢 / 不是很」这类是完整表达，不算否定
+    if (/(不|没|没有|不是|别|甭|勿)/.test(before) && !/(不合适|不喜欢|不是很|不觉得|不想要)$/.test(before)) return true
+  }
+  return false
 }
 
 /**
@@ -105,6 +171,9 @@ export function detectEvent(text, pauseWord = '停') {
  */
 export function refineEvent(name, text) {
   const t = String(text ?? '')
+  // 2026-11-10（审计 A10）：这条目前不可达 —— mentionOther 的规则在 RULES 里
+  // 排在 praise 前面，detectEvent 已经先返回了。留着是防以后调顺序，加注释免得
+  // 下一个人以为它在生效。
   if (name === 'praise' && /别的(女生|女孩|人)|前女友/.test(t)) return 'mentionOther'
   if (name === 'praise' && /[吗呢][。.!！?？…~\s]*$/.test(t)) return null
   return name

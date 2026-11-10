@@ -1127,7 +1127,7 @@ src/unlock.js     渐进解锁
 src/proactive.js  主动开口 / 发图的判据与账本（纯函数，有测试）
 src/config.js     全部配置项（schemastery，92 项）
 panel/index.html  面板（单文件，无构建，无外部资源）
-test/             node --test 用例（148 条，5 个文件）
+test/             node --test 用例（200 条，8 个文件）
 tools/preview.mjs 命令行预览：看现在到底注入了什么
 tools/doctor.mjs  体检：一条命令查安装、注入、状态、面板、生图
 tools/watch.mjs   监控：盯状态变化，值变了才打印
@@ -1144,7 +1144,7 @@ CHANGELOG.md      版本变更
 自己跑一遍：
 
 ```bash
-node --test --test-concurrency=1                                   # 148 条测试
+node --test --test-concurrency=1                                   # 200 条测试
 node tools/doctor.mjs --panel http://127.0.0.1:<端口>/dsh-longing  # 体检
 node tools/preview.mjs [状态目录] qq unknown                        # 看当前注入块
 ```

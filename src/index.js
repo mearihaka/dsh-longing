@@ -978,7 +978,7 @@ export function apply(ctx, configIn) {
     if (webTimer) clearTimeout(webTimer)
     if (toolTimer) clearTimeout(toolTimer)
     // 全局入口也要摘掉：不然热重载后通道插件还调着旧闭包，用过期 state 覆盖注入文件
-    for (const k of ['__dshDesireBlock', '__dshDesireBlocks', '__dshLongingNote', '__dshLongingEvent', '__dshLongingState', '__dshLongingProactive', '__dshLongingMarkInitiate', '__dshLongingPauseWord', '__dshLongingImageGate', '__dshLongingMarkImage', '__dshLongingRefresh', '__dshLongingDiary', '__dshLongingDiaryText', '__dshComfyUp', '__dshQqLastOwnerAt', '__dshLongingInternals']) {
+    for (const k of ['__dshDesireBlock', '__dshDesireBlocks', '__dshLongingNote', '__dshLongingEvent', '__dshLongingState', '__dshLongingProactive', '__dshLongingMarkInitiate', '__dshLongingPauseWord', '__dshLongingImageGate', '__dshLongingMarkImage', '__dshLongingRefresh', '__dshLongingDiary', '__dshLongingDiaryText', '__dshComfyUp', '__dshQqLastOwnerAt', '__dshLongingInternals', '__dshLongingBehavior']) {
       try {
         delete globalThis[k]
       } catch {}
@@ -1446,7 +1446,7 @@ export function apply(ctx, configIn) {
           type: 'object',
           properties: {
             // 2026-11-10（审计 F16）：reflect 以前有实现却不在 enum 里 —— 模型永远调不到。
-            action: { type: 'string', enum: ['get', 'set', 'bump', 'preset', 'pause', 'event', 'events', 'diary', 'thought', 'reflect'] },
+            action: { type: 'string', enum: ['get', 'set', 'bump', 'preset', 'pause', 'event', 'events', 'diary', 'thought', 'reflect', 'recall'] },
           detail: {
             type: 'string',
             description: '配 action=event 用：他刚才说的那句原话（不超过 80 字）。日记要写事实，靠的就是这个；不填就只留事件类型。',
@@ -1463,6 +1463,30 @@ export function apply(ctx, configIn) {
             text: { type: 'string' },
             minutes: { type: 'number' },
             days: { type: 'number', description: '配 action=diary 用：读最近几天（默认 3）' },
+            // 2026-11-10（审计 A01）：description 里写了 recall 的参数，但 properties 一个都没声明 ——
+            // 模型本来就不太会传 schema 以外的参数，严格校验的框架还会直接丢掉。
+            since: {
+              type: 'string',
+              description: '配 action=recall 用：多久以前。3h 小时 / 2d 天 / 1w 周 / 30m 分钟。默认 3d',
+            },
+            tone: {
+              type: 'string',
+              enum: ['good', 'bad'],
+              description: '配 action=recall 用：只看好的（good）或只看不好的（bad）',
+            },
+            query: {
+              type: 'string',
+              description: '配 action=recall 用：按关键词筛（会比对回想文案和当时的原话）',
+            },
+            source: {
+              type: 'string',
+              enum: ['all', 'diary', 'anchor'],
+              description: '配 action=recall 用：all 两边都要（默认）/ diary 只查事件 / anchor 只查还压在心上的',
+            },
+            limit: {
+              type: 'number',
+              description: '配 action=recall 用：最多几条，1-20，默认 8',
+            },
           },
           required: ['action'],
         },
@@ -1484,6 +1508,25 @@ export function apply(ctx, configIn) {
                 .map(([k, v]) => `${k}：${v.note}`)
                 .join('\n'),
             }
+          }
+          // 2026-11-10（审计 A01）：recall 之前只在 CHANGELOG 里存在 ——
+          // import 了、纯函数测了 18 条，但 enum 没有、派发没有、参数没有，
+          // 模型硬调也只会落到最后的七维摘要。200 条测试全绿却没人能用。
+          if (action === 'recall') {
+            const r = recall({
+              diary,
+              anchors: state.anchors,
+              events: EVENTS,
+              now: Date.now(),
+              params: {
+                since: args?.since,
+                tone: args?.tone,
+                query: args?.query,
+                source: args?.source,
+                limit: args?.limit,
+              },
+            })
+            return { ok: r.ok, text: r.text, ...(r.error ? { error: r.error } : {}) }
           }
           if (action === 'diary') {
             const days = Math.max(1, Math.min(30, num(args?.minutes, num(settings()?.diaryDays, 1))))

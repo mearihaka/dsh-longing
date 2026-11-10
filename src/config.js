@@ -227,7 +227,7 @@ export const ConfigSchema = Schema.object({
 
   // ── 安全 ──
   ownerOnly: Schema.boolean().default(true).description('只对主人生效（强烈建议保持开启）'),
-  pauseWord: Schema.string().default('停').description('安全词：说出后立刻降回平静'),
+  pauseWord: Schema.string().default('可克课科').description('安全词：说出后立刻降回平静'),
   // pausedUntil 曾是这里的配置项，但运行时只认状态文件里的那一个（面板改它走 /api/pause），
   // 面板提交也会被 ALLOWED_KEYS 挡掉 —— 是个「看起来能配、坏了会误导人」的死键，删掉。
 
