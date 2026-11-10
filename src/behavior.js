@@ -56,11 +56,31 @@ const clamp01 = (v, lo = 0.05, hi = 0.95) => Math.max(lo, Math.min(hi, v))
  *   tone: 'warm'|'flat'|'low'
  * }}
  */
+/**
+ * 敷衍的余温：最近几分钟内回过「嗯 / 哦 / 啊」，精力往下压一档。
+ *
+ * 2026-11-10（审计 F27）：`isFlatReply` 之前导出了但零调用 —— 注释和 CHANGELOG 都说
+ * 「整句语气词只该压低 energy、拉高沉默概率」，实际只做了「不记事件」那一半。
+ * 现在真的接上了：__dshLongingNote 记下时间，这里按 10 分钟线性回弹。
+ *
+ * @param {object} state
+ * @param {number} [now]
+ * @returns {number} 0.7 ~ 1 的乘数
+ */
+export function flatFactor(state, now = Date.now()) {
+  const at = Number(state?.flatAt)
+  if (!Number.isFinite(at) || at <= 0) return 1
+  const age = now - at
+  if (age < 0 || age > 10 * 60_000) return 1 // 10 分钟后就回弹完了
+  return 0.7 + 0.3 * (age / (10 * 60_000))
+}
+
 export function behaviorOf(state, cfg = {}) {
   const valence = valenceOf(state)
   // 0.5 是中位；效价拉满也只到 0.9 / 0.1 —— 不给极端值，
   // 极端会让她要么像打了鸡血要么像断线，都不是人
-  const energy = clamp01(0.5 + 0.4 * valence)
+  // 敷衍过的余温（见 flatFactor）：刚回过「嗯」的话，这会儿话更少
+  const energy = Math.max(0.05, Math.min(0.95, 0.5 + 0.4 * valence)) * flatFactor(state)
 
   return {
     energy: Math.round(energy * 100) / 100,

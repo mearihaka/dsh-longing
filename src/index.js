@@ -16,7 +16,7 @@ import { detectAndRefine } from './auto-event.js'
 // 事件锚点：5 天半衰期的记忆，recall 用来标「还压在心上」
 import { addAnchor, anchorStrength, decayedStrength } from './anchor.js'
 // 行为参数：状态不只改「说什么」，还改「怎么说」
-import { behaviorOf } from './behavior.js'
+import { behaviorOf, isFlatReply } from './behavior.js'
 // 回想：纯函数，输入日记数据、输出文本
 import { recall } from './recall.js'
 // 2026-11-09：日记的「事实」只来自事件记录（含 detail 原话），不读聊天记录原文。
@@ -930,8 +930,11 @@ export function apply(ctx, configIn) {
     const lustNow = num(state.lust, DEFAULTS.lust)
     const affRoom = Math.max(0.08, 1 - affNow / 100)
     const lustRoom = Math.max(0.08, 1 - lustNow / 100)
-    const nextLust = clampFloat(lustNow + num(eff?.interactionLust, 0.03) * lustRoom)
-    const nextAff = clampFloat(affNow + num(eff?.affectionGain, 0.08) * affRoom)
+    // 2026-11-10（审计 F29）：fallback 跟 schema 默认对齐（0.1 / 0.3）。
+    // 原来写着再平衡前的 0.03 / 0.08 —— 那是私有版调过之后的值，
+    // 公共版 schema 是 0.1 / 0.3，缺键时两边会算出不同结果。
+    const nextLust = clampFloat(lustNow + num(eff?.interactionLust, 0.1) * lustRoom)
+    const nextAff = clampFloat(affNow + num(eff?.affectionGain, 0.3) * affRoom)
     // 已经顶满就不重复写盘（连发多条消息时省掉成串的同步 IO）。
     // 但联系时间要落：涨值满了不代表没联系过（审计 F18）。
     if (nextLust === state.lust && nextAff === state.affection && !text) {
@@ -953,6 +956,12 @@ export function apply(ctx, configIn) {
     // 认不出的不硬凑（宁可漏判），交给模型自己调 action=event。
     // fireEvent 自带 30 秒同类去重，通道那边也调一次的话不会记两遍。
     if (text) {
+      // 2026-11-10（审计 F27）：「嗯 / 哦 / 啊」这种整句语气词不记事件，
+      // 但要留个痕迹 —— behavior.js 的 flatFactor 按它把精力压一档。
+      // 原来 isFlatReply 导出了却零调用，注释和 CHANGELOG 承诺的行为只有一半。
+      try {
+        if (isFlatReply(text)) state.flatAt = Date.now()
+      } catch { /* 判不出来不算错 */ }
       try {
         const ev = detectAndRefine(text, String(settings()?.pauseWord ?? '停').trim())
         if (ev) fireEvent(ev, { detail: String(text).slice(0, 80), src: 'channel' })
@@ -1498,7 +1507,10 @@ export function apply(ctx, configIn) {
           if (action === 'get' && !isOwner) {
             return { ok: true, text: `现在：${curMode()}（具体数值只在主人私聊里能查）` }
           }
-          if (!['get', 'events'].includes(action) && settings().ownerOnly !== false && !isOwner) {
+          // 2026-11-10（审计 F28）：CHANGELOG §6 说「recall / diary 进非主人只读白名单」，
+          // 实际这里还是 ['get', 'events']。它们都只是读，不该收「只能在主人私聊里改」。
+          const READONLY_ACTIONS = ['get', 'events', 'recall', 'diary']
+          if (!READONLY_ACTIONS.includes(action) && settings().ownerOnly !== false && !isOwner) {
             return { ok: false, text: 'Permission Denied：欲望值只能在主人私聊里改。' }
           }
           if (action === 'events') {
