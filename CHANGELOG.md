@@ -85,8 +85,14 @@
 
 ### 测试
 
-200 条（smoke 13 / longing 67 / stranger 17 / mood-curio 33 / recall 18 / reflect 24 / reflect-wiring 10 / audit 18）。
-新增 `test/recall.test.mjs` 18 条，固定 `now` 和 `Asia/Shanghai`，结果不随运行时间变化。
+209 条（smoke 13 / longing 67 / stranger 17 / mood-curio 33 / recall 18 / reflect 24 /
+reflect-wiring 10 / audit 18 / tool-dispatch 9）。
+新增 `test/recall.test.mjs` 18 条（纯函数，固定 `now` 和 `Asia/Shanghai`）
+和 `test/tool-dispatch.test.mjs` 9 条（走 execute() 全链路）。
+后者专门抓「函数对但调不到」——A01 就是这么漏的：18 条纯函数测试全绿，
+功能却因为 enum 没登记而完全不可达。它的核心断言是
+「源码里的 `action === 'x'` 和 schema 的 enum 必须一一对应」，
+反向验证过：删掉 enum 里的 recall、或删掉 execute 里的分支，都会立刻失败。
 
 ---
 
