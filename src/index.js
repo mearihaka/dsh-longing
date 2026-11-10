@@ -12,7 +12,7 @@ import { REFLECT_DEFAULTS, buildReflectPrompt, extractThoughts, recentThoughtTex
 import { EVENTS, applyEvent, recentEvents } from './events.js'
 // 2026-11-10：从原文里认事件 —— 这套规则以前在通道插件里（dsh-qq 的 desire-events.js），
 // 换任何通道就失效。现在搬进插件本体，通道只要把原话传给 __dshLongingNote 就能用。
-import { detectAndRefine } from './auto-event.js'
+import { DEFAULT_PAUSE_WORD, detectAndRefine } from './auto-event.js'
 // 事件锚点：5 天半衰期的记忆，recall 用来标「还压在心上」
 import { addAnchor, anchorStrength, decayedStrength } from './anchor.js'
 // 行为参数：状态不只改「说什么」，还改「怎么说」
@@ -71,6 +71,11 @@ const NUM_KEYS = new Set([
   // 2026-11-07：这两个键当初写了注释却漏进清单 —— 面板保存回 200、值原地不动。
   // 教训不是「记得加键」，而是「测试只验 GET 里有这个键，没验 POST 能改这个键」。
   'proactivePerHour', 'proactiveCooldownMin',
+  // 2026-11-10（复审计 N4）：A06 加的 5 个键忘了进清单 —— 面板改回 200 但值原地不动。
+  // 这是第三次了（1.11.0 的 proactivePerHour / proactiveCooldownMin 是前两次），
+  // 所以 test/config-keys.test.mjs 里补了一条断言：schema 里每个 number/boolean 键
+  // 都必须在 ALLOWED_KEYS 里。
+  'anchorHalfLifeDays', 'anchorMinStrength', 'anchorMaxTotal',
   // 2026-11-09：日记只读今天的事件，不碰聊天记录
 ])
 const BOOL_KEYS = new Set([
@@ -79,6 +84,9 @@ const BOOL_KEYS = new Set([
   'couplingEnabled', 'debugMode', 'feedbackThink', 'feedbackHint', 'feedbackSpeak', 'feedbackAct', 'unlocksEnabled',
   'curioEnabled',
   'diaryAutoWrite',
+  // 2026-11-10（复审计 N4）：上一版只把三个数字键补进 NUM_KEYS，漏了这两个布尔开关 ——
+  // 结果 autoEventEnabled / anchorEnabled 在面板上改回 200、值原地不动。同一个病第三次。
+  'autoEventEnabled', 'anchorEnabled',
 ])
 const STR_KEYS = new Set([
   'channels', 'peakWindow', 'activeHours', 'quietHours', 'sleepWindow', 'pauseWord', 'personaNote',
@@ -977,7 +985,7 @@ export function apply(ctx, configIn) {
         // 路人装上去不想让每句话都改数值时用这个，而不是把自己整个插件关掉。
         const ev = settingNow?.autoEventEnabled === false
           ? null
-          : detectAndRefine(text, String(settingNow?.pauseWord ?? '可克课科').trim())
+          : detectAndRefine(text, String(settingNow?.pauseWord ?? DEFAULT_PAUSE_WORD).trim())
         if (ev) fireEvent(ev, { detail: String(text).slice(0, 80), src: 'channel' })
       } catch {
         // 认事件失败不影响聊天
@@ -1001,7 +1009,7 @@ export function apply(ctx, configIn) {
     if (webTimer) clearTimeout(webTimer)
     if (toolTimer) clearTimeout(toolTimer)
     // 全局入口也要摘掉：不然热重载后通道插件还调着旧闭包，用过期 state 覆盖注入文件
-    for (const k of ['__dshDesireBlock', '__dshDesireBlocks', '__dshLongingNote', '__dshLongingEvent', '__dshLongingState', '__dshLongingProactive', '__dshLongingMarkInitiate', '__dshLongingPauseWord', '__dshLongingImageGate', '__dshLongingMarkImage', '__dshLongingRefresh', '__dshLongingDiary', '__dshLongingDiaryText', '__dshComfyUp', '__dshQqLastOwnerAt', '__dshLongingInternals', '__dshLongingBehavior']) {
+    for (const k of ['__dshDesireBlock', '__dshDesireBlocks', '__dshLongingNote', '__dshLongingEvent', '__dshLongingState', '__dshLongingProactive', '__dshLongingMarkInitiate', '__dshLongingPauseWord', '__dshLongingImageGate', '__dshLongingMarkImage', '__dshLongingRefresh', '__dshLongingDiary', '__dshLongingDiaryText', '__dshComfyUp', '__dshQqLastOwnerAt', '__dshLongingInternals', '__dshLongingBehavior', '__dshLongingReflect']) {
       try {
         delete globalThis[k]
       } catch {}
@@ -1667,7 +1675,7 @@ export function apply(ctx, configIn) {
    * 安全词：通道插件认消息时用这个，不然面板里改「安全词」谁都不认。
    * 以前这个键在 longing 里没有读取点、dsh-qq 那边是硬编码正则。
    */
-  globalThis.__dshLongingPauseWord = () => String(settings()?.pauseWord ?? '停').trim()
+  globalThis.__dshLongingPauseWord = () => String(settings()?.pauseWord ?? DEFAULT_PAUSE_WORD).trim()
   // 2026-11-10：把行为参数暴露给通道（通道可以据此控制分段数/字数上限/接不接话）。
   // 插件这边已经把它注入注入块了，不改通道也有用。
   globalThis.__dshLongingBehavior = () => behaviorOf(state, settings())

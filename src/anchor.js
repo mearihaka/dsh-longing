@@ -34,11 +34,13 @@ const MIN_STRENGTH = 0.8
  * 一个事件能留下多强的锚点。
  *
  * 用事件表里的 dims 绝对值之和除以一个基准 —— 改得越狠，刻得越深。
- * 实测（2026-11-10 再平衡后重算）：gift 0.55（低于门槛 0.8，永远不存）·
- *   apologize 1.05 · protect 1.2 · promise 1.45 · praise 1.55 · cold 1.8 ·
- *   comfort 2.0 · blame 3.0 · leave 4.6 · climax 18.8
- * 再平衡（正向 ×0.6 / 负向 ×1.4）之后整体都降了，门槛 0.8 卡掉的更多 ——
- * 这也是 recall 改用结构化日记、不再靠锚点列事件的原因之一。
+ * 实测（2026-11-10 再平衡后重算，逐个跑 anchorStrength 得到的值）：
+ *   gift 0.55（低于门槛 0.8，永远不存）· apologize 1.05 · protect 1.2 ·
+ *   promise 1.45 · praise 1.55 · cold 1.8 · comfort 2.0 · blame 3.0 ·
+ *   leave 6.8 · climax 18.8
+ *
+ * leave 是 6.8 不是 4.6 —— 复审计 N7 指出前一个版本算错了。
+ * recall 里「强度 ≥ 2 算还压着」那条分档就是按这张表定的。
  *
  * @param {object} dims  EVENTS[name].dims
  * @returns {number} 0 以上的强度，通常 1~6

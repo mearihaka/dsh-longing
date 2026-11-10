@@ -92,6 +92,21 @@ export function todayKey(d = new Date()) {
 }
 
 /**
+ * 日期键 → 可比较的整数（20261109）。
+ *
+ * todayKey 用的是 `${y}-${m}-${d}`，10 号之前不补零，
+ * 所以 '2026-11-9' > '2026-11-10'（字符串逐位比，'9' > '1'）。
+ * 凡是「哪个日期更新」的判断都必须走这里，别用字符串直接比。
+ *
+ * @param {string} k 形如 2026-11-9
+ * @returns {number} 解析不了返回 0（当作「最旧」）
+ */
+export function keyNum(k) {
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(k ?? ''))
+  return m ? Number(m[1]) * 10000 + Number(m[2]) * 100 + Number(m[3]) : 0
+}
+
+/**
  * 「这一次高峰属于哪一天」。
  *
  * 默认窗口 22:00-02:00 跨零点：23:00 和次日 00:30 都在这段高峰里，
@@ -359,9 +374,15 @@ export function nextState(prev, cfg = {}, now = Date.now()) {
   const curLust = num(s.lust, 30)
   if (curLust > LUST_FLOOR) s.lust = clampFloat(Math.max(LUST_FLOOR, curLust - decayAmt))
   else s.lust = clampFloat(Math.min(LUST_FLOOR, curLust + 0.5 * dt))
-  if (peak && s.lastPeak !== peakKey(peakWin, new Date(now))) {
+  // 2026-11-10（复审计 N5）：只比「日期键是否不同」的话，把时钟往回拨一天
+  // 就会再发一次 +25 —— 实测 79 → 100，连续回拨能一直顶在 100。
+  // 但「新的 key 必须更大」不能拿字符串比：todayKey 不补零，
+  // '2026-11-10' < '2026-11-9'（'1' < '9'），于是 10 号反而少发一次。
+  // 转成 20261109 这样的整数再比，跨月跨年也成立。
+  const nextPeakKey = peakKey(peakWin, new Date(now))
+  if (peak && s.lastPeak !== nextPeakKey && keyNum(nextPeakKey) > keyNum(s.lastPeak)) {
     s.lust = clampFloat(num(s.lust, 30) + num(cfg?.peakBonus, 25))
-    s.lastPeak = peakKey(peakWin, new Date(now))
+    s.lastPeak = nextPeakKey
   }
   const out = evolve(s, cfg, dt, peakH, restH)
   out.tickedAt = now

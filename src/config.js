@@ -227,7 +227,9 @@ export const ConfigSchema = Schema.object({
 
   // ── 安全 ──
   ownerOnly: Schema.boolean().default(true).description('只对主人生效（强烈建议保持开启）'),
-  pauseWord: Schema.string().default('可克课科').description('安全词：说出后立刻降回平静'),
+  // 默认值必须和 auto-event.js 的 DEFAULT_PAUSE_WORD、README §7.3 一致（复审计 N1：
+  // 这里曾经被改成「可克课科」，而函数默认参数和文档还是「停」—— 说安全词没反应）。
+  pauseWord: Schema.string().default('停').description('安全词：说出后立刻降回平静'),
 
     // ── 2026-11-10（审计 A06）：v1.15.0 三个新模块的开关 ──
     autoEventEnabled: Schema.boolean().default(true)

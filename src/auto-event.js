@@ -16,6 +16,18 @@
  */
 
 /**
+ * 安全词的默认值。三处必须一致：这里、config.js 的 pauseWord default、README §7.3。
+ *
+ * 2026-11-10（复审计 N1）：值是「停」。
+ *
+ * 中间有一版把它换成了「可克课科」，动机是把「停下来想想 / 停一会儿」这类误触挡死。
+ * 但那是修错地方：误触的根因是「尾巴 ≤ 4 字」判太松，已经由下面的 SOFT_TAIL 白名单解决；
+ * 换掉词只带来一个后果 —— 用户说「停」没反应，而 README、面板 placeholder、函数默认参数
+ * 三处还都写着「停」。默认词必须是用户第一眼就懂的那个词。
+ */
+export const DEFAULT_PAUSE_WORD = '停'
+
+/**
  * 太长的段落不做关键词判定：长篇里必然同时命中好几类，误判率更高。
  */
 const MAX_LEN = 120
@@ -41,7 +53,7 @@ const EVENT_TONE = {
 
 const RULES = [
   // ── 关系级重击 ──
-  ['leave', /分手|再也不(理你|找你|来了)|别来找我|不要你了|滚吧|滚开|要走了|要走|我走/],
+  ['leave', /分手|再也不(理你|找你|来了)|别来找我|不要你了|滚吧|滚开|我要走了|我要走/],
   ['lie', /骗我|骗人|撒谎|你在骗/],
   ['compare', /你看人家|人家都|学学人家|比不上人家|人家比你/],
   ['bodyShame', /你.{0,3}胖|身材(不行|差|一般)|该减肥了/],
@@ -85,7 +97,7 @@ export function isSafetyWord(text, word) {
   const t = String(text ?? '').trim()
   // 2026-11-10（审计 A04）：pauseWord 为空时安全词静默失效，没有任何提示。
   // 回退到默认词，并让调用方能在日志里看见（这里只做回退，不动全局）。
-  const w = String(word ?? '').trim() || '可克课科'
+  const w = String(word ?? '').trim() || DEFAULT_PAUSE_WORD
   if (!t || !t.startsWith(w)) return false
 
   // 2026-11-10（审计 A04）：原来只看「尾巴 ≤ 4 字」，于是
@@ -105,7 +117,7 @@ export function isSafetyWord(text, word) {
  * @param {string} text 主人发来的原文
  * @returns {string|null} dsh-longing 的事件名，认不出返回 null
  */
-export function detectEvent(text, pauseWord = '停') {
+export function detectEvent(text, pauseWord = DEFAULT_PAUSE_WORD) {
   const t = String(text ?? '').trim()
   if (!t) return null
   if (t.length > MAX_LEN) return null
@@ -146,10 +158,25 @@ function isHypotheticalOrNegated(text, re) {
   if (/[吗呢么][。.!！?？…~\s]*$/.test(t)) return true
   if (/(如果|假如|要是|万一|哪天|会不会|怎样|怎么办|怎么可能|难道|谁说|谁要|谁跟你|别再说|不许说|不要说|别提)/.test(t)) return true
 
-  // ② 句首祈使的否定：「别夸我」「不要说了」—— 整句在否认，不是在陈述
-  if (/^(别|不要|不用|甭|少)/.test(t)) return true
+  // ② 句首祈使的否定：「别夸我」「不要说了」—— 整句在否认，不是在陈述。
+  //
+  // 2026-11-10（复审计 N2）：这条会把 leave 自己的两个核心模式一起拦掉 ——
+  // 「不要你了」「别来找我」本身就是以这两个词开头的分手表达，
+  // 而它们是最重的两种（affection −7.8、grudge 3、锚点 4.6）。
+  // 结果是「说分手吧」她炸，「说不要你了」她毫无反应。
+  // 所以先看命中的是不是 leave 的强模式，是就跳过这条。
+  if (/^(别|不要|不用|甭|少)/.test(t)) {
+    const hit = re.exec(t)
+    const strongBreakup = hit && hit.index === 0 && /^(不要你了|别来找我)/.test(hit[0])
+    if (!strongBreakup) return true
+  }
 
-  // ③ 否定：**只看命中位置紧邻的 3 个字**。
+  // ③ 暂别词：「我要走了，等下再回你」不是分手。
+  // 2026-11-10（复审计 N3）：光看「我要走了」会把它当成 leave，
+  // 但这句每天都会说，记仇五天的代价太大。
+  if (/(等下|一会儿|等会|待会|马上|稍后|晚点|回头|再回你|再聊|去忙|上个厕|洗澡|吃饭|睡觉)/.test(t)) return true
+
+  // ④ 否定：**只看命中位置紧邻的 3 个字**。
   //
   // 原来是 8 个字，于是「我们不合适，分手吧」里「分手」前面 5 个字有个「不」，
   // 被判成否定 —— 那是真实的分手信号，不能拦。
@@ -183,6 +210,6 @@ export function refineEvent(name, text) {
  * 一步到位：认事件 + 修正。
  * @returns {string|null}
  */
-export function detectAndRefine(text, pauseWord = '停') {
+export function detectAndRefine(text, pauseWord = DEFAULT_PAUSE_WORD) {
   return refineEvent(detectEvent(text, pauseWord), text)
 }
