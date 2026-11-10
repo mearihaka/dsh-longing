@@ -10,6 +10,15 @@ import { addThought, formatDay, noteReflect, pruneDiary, recentDiary, recordEven
 // 旧的 thoughts 只能靠外层模型主动调工具写，实测永远是空的（见 reflect.js 头注释）。
 import { REFLECT_DEFAULTS, buildReflectPrompt, extractThoughts, recentThoughtTexts, shouldReflect } from './reflect.js'
 import { EVENTS, applyEvent, recentEvents } from './events.js'
+// 2026-11-10：从原文里认事件 —— 这套规则以前在通道插件里（dsh-qq 的 desire-events.js），
+// 换任何通道就失效。现在搬进插件本体，通道只要把原话传给 __dshLongingNote 就能用。
+import { detectAndRefine } from './auto-event.js'
+// 事件锚点：5 天半衰期的记忆，recall 用来标「还压在心上」
+import { addAnchor, anchorStrength, decayedStrength } from './anchor.js'
+// 行为参数：状态不只改「说什么」，还改「怎么说」
+import { behaviorOf } from './behavior.js'
+// 回想：纯函数，输入日记数据、输出文本
+import { recall } from './recall.js'
 // 2026-11-09：日记的「事实」只来自事件记录（含 detail 原话），不读聊天记录原文。
 import { buildBlock, modeOf } from './prompt.js'
 import { imageGate, noteImage, noteInitiate, proactiveGate } from './proactive.js'
@@ -386,6 +395,20 @@ export function apply(ctx, configIn) {
       ? out.grudges.filter((g) => g && Object.hasOwn(EVENTS, String(g.name ?? '')) && num(g.t) + num(g.days, 1) * 86_400_000 > Date.now()).slice(-3)
       : []
     out.firsts = out.firsts && typeof out.firsts === 'object' ? out.firsts : {}
+    // 2026-11-10：anchors 以前靠 `{ ...s }` 原样带过去，没校验也没硬上限。
+    // events / grudges / proactiveLog 都有这一步，唯独它漏了。
+    out.anchors = Array.isArray(out.anchors)
+      ? out.anchors
+          .filter((a) => a && Object.hasOwn(EVENTS, String(a?.name ?? '')) && Number.isFinite(Number(a?.at)))
+          .map((a) => ({
+            name: String(a.name),
+            tone: a.tone === 'good' ? 'good' : 'bad',
+            at: Number(a.at),
+            strength: Math.max(0, Number(a.strength) || 0),
+            detail: String(a.detail ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
+          }))
+          .slice(-24)
+      : []
     // ── 好奇心（2026-11-06）──
     // curio 是独立的驱动力，不进 curve.js 的七维耦合：那套算的是身体，
     // 好奇心算的是「多久没换过新东西」，混在一起会互相污染。
@@ -856,6 +879,15 @@ export function apply(ctx, configIn) {
     state.everContacted = true
     // 「第一次」只记一次：第一次被碰、第一次被要、第一次听他说要走……
     if (FIRST_EVENTS.has(key) && !state.firsts[key]) state.firsts = { ...state.firsts, [key]: Date.now() }
+    // 2026-11-10：留下锚点 —— 30 分钟到 5 天之间的记忆（见 anchor.js）。
+    // recentEvents 只管 30 分钟，过了就彻底忘，所以「昨天被骂」和「一周前被骂」
+    // 对她完全一样。锚点补的就是这一段，带 5 天半衰期。
+    // tone 必须是 good/bad：stop 的 tone 是空串（它只让插件暂停），不该进锚点。
+    {
+      const tone = EVENTS[key]?.tone
+      const strength = anchorStrength(EVENTS[key]?.dims)
+      if (tone && strength > 0) state.anchors = addAnchor(state.anchors, key, tone, strength, Date.now(), detail)
+    }
     // 顺手记进当天的日记：好的进「让我高兴的」，坏的进「让我难受的」
     diary = recordEvent(diary, { name: key, note: r.note, tone: r.tone, detail, src, now: Date.now() })
     saveDiary()
@@ -888,8 +920,18 @@ export function apply(ctx, configIn) {
     // 2026-11-06：顺手记下他刚说的一句，好奇心搜什么词靠它抠。
     // 第二个参数是可选的，老调用方（不传 text）行为完全不变。
     if (text) state.lastUserText = String(text).slice(0, 200)
-    const nextLust = clampFloat(num(state.lust, DEFAULTS.lust) + num(eff?.interactionLust, 0.1))
-    const nextAff = clampFloat(num(state.affection, DEFAULTS.affection) + num(eff?.affectionGain, 1))
+    // 2026-11-10（「正向加的数值要少，不然聊几十句就满了」）：改成**边际递减**。
+    //
+    // 原来线性：affectionGain 0.3 × 一天 100 条 = +30，衰减只 −7.2，净 +22.8/天，
+    // 五天就满。加 (1 − 当前值/100) 的因子之后：0 分时加满额、50 分时加一半、
+    // 90 分时只加十分之一 —— 数学上指数趋近 100，聊再多也涨不爆。
+    // 因子下限 0.08：到 92 分以后还留一丝，不至于彻底冻结。
+    const affNow = num(state.affection, DEFAULTS.affection)
+    const lustNow = num(state.lust, DEFAULTS.lust)
+    const affRoom = Math.max(0.08, 1 - affNow / 100)
+    const lustRoom = Math.max(0.08, 1 - lustNow / 100)
+    const nextLust = clampFloat(lustNow + num(eff?.interactionLust, 0.03) * lustRoom)
+    const nextAff = clampFloat(affNow + num(eff?.affectionGain, 0.08) * affRoom)
     // 已经顶满就不重复写盘（连发多条消息时省掉成串的同步 IO）。
     // 但联系时间要落：涨值满了不代表没联系过（审计 F18）。
     if (nextLust === state.lust && nextAff === state.affection && !text) {
@@ -906,6 +948,18 @@ export function apply(ctx, configIn) {
     state.updatedAt = Date.now()
     writeJson(stateFile, snapState(), logger)
     refreshBlock()
+    // 2026-11-10：从原文里认事件，认出来就直接记。
+    // 通道只负责把原话传进来，判断在这里做 —— 换任何通道都有效。
+    // 认不出的不硬凑（宁可漏判），交给模型自己调 action=event。
+    // fireEvent 自带 30 秒同类去重，通道那边也调一次的话不会记两遍。
+    if (text) {
+      try {
+        const ev = detectAndRefine(text, String(settings()?.pauseWord ?? '停').trim())
+        if (ev) fireEvent(ev, { detail: String(text).slice(0, 80), src: 'channel' })
+      } catch {
+        // 认事件失败不影响聊天
+      }
+    }
   }
 
   probeComfy()
@@ -1545,6 +1599,9 @@ export function apply(ctx, configIn) {
    * 以前这个键在 longing 里没有读取点、dsh-qq 那边是硬编码正则。
    */
   globalThis.__dshLongingPauseWord = () => String(settings()?.pauseWord ?? '停').trim()
+  // 2026-11-10：把行为参数暴露给通道（通道可以据此控制分段数/字数上限/接不接话）。
+  // 插件这边已经把它注入注入块了，不改通道也有用。
+  globalThis.__dshLongingBehavior = () => behaviorOf(state, settings())
   /** 主动发图：判据 + 记一笔（通道插件真的把图发出去之后调） */
   globalThis.__dshLongingImageGate = () => imageGate({ cfg: settings(), state })
   globalThis.__dshLongingMarkImage = (info = null) => {

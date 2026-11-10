@@ -114,8 +114,8 @@ export const ConfigSchema = Schema.object({
     .default([])
     .description('她不知道该搜什么时的兜底话题（一个一行；留空 = 用「最近科技新闻」这类通用词）'),
   // ── 好感度 ──
-  interactionLust: Schema.number().min(0).max(20).step(0.1).default(0.1).description('主人每说一句涨多少性欲（很小，避免聊天把性欲顶满）'),
-  affectionGain: Schema.number().min(0).max(10).default(0.3).description('每次主人聊天加多少好感（默认很小，好感要靠事件养）'),
+  interactionLust: Schema.number().min(0).max(20).step(0.01).default(0.03).description('主人每说一句涨多少性欲（很小，避免聊天把性欲顶满）'),
+  affectionGain: Schema.number().min(0).max(10).default(0.08).description('每次主人聊天加多少好感（默认很小，好感要靠事件养）'),
   affectionDecay: Schema.number().min(0).max(5).default(0.3).description('每小时自然回落多少好感'),
   affectionClose: Schema.number().min(0).max(100).default(60).description('好感到多少开始黏人'),
   affectionDevoted: Schema.number().min(0).max(100).default(80).description('好感到多少离不开'),
@@ -169,14 +169,14 @@ export const ConfigSchema = Schema.object({
     .default(true)
     .description('让她自己写心情日记：把当天发生的事和此刻的状态交给模型，写一两句第一人称的话；关掉就只剩两行模板'),
   diaryPerDay: Schema.number().min(1).max(12).default(3).description('一天最多自己写几条'),
-  diaryMinGapMin: Schema.number().min(0).max(720).default(150).description('两条之间至少隔多少分钟（防止翻来覆去写同一件事）'),
+  diaryMinGapMin: Schema.number().min(0).max(720).default(60).description('两条之间至少隔多少分钟（防止翻来覆去写同一件事）'),
   diaryMinEvents: Schema.number().min(0).max(50).default(2).description('当天至少发生几件事才值得写；0 = 每天都写'),
   diaryMaxChars: Schema.number().min(20).max(300).default(120).description('一条日记最多多少字'),
-  diaryMaxTokens: Schema.number().min(60).max(4000).default(1200).description('写日记时给模型的最大输出 token'),
+  diaryMaxTokens: Schema.number().min(60).max(4000).default(1600).description('写日记时给模型的最大输出 token'),
   diaryTemperature: Schema.number().min(0).max(2).default(0.95).description('写日记的温度：高一点更像人话，低一点更稳'),
   diaryProvider: Schema.string().default('').description('写日记用的 provider（留空 = 用 DSH 当前默认模型）'),
   diaryModel: Schema.string().default('').description('写日记用的 model（留空 = 用 DSH 当前默认模型）'),
-  ownerRef: Schema.string().default('TA').description('日记和注入里怎么称呼主人（他/她/姐姐/名字）；留空用 TA'),
+  ownerRef: Schema.string().default('姐姐').description('日记和注入里怎么称呼主人（他/她/姐姐/名字）；留空用 TA'),
   diaryPersona: Schema.string().default('').description('写日记时告诉模型「你是谁」；留空则用 personaName'),
 
   // ── 渐进解锁 ──
@@ -206,6 +206,7 @@ export const ConfigSchema = Schema.object({
   // 为什么要单独一个总闸：以前 nsfwImages 只关「成人图片」，但露骨的话、娇喘、亲密事件
   // 全都不归它管 —— 用户以为关掉了「成人向」，结果她照样说骚话、照样发娇喘。
   // 现在 nsfwEnabled 是唯一的成人内容开关：关掉之后不谈、不说、不画、不发。
+  // ── 私有定制：从本机聊天记录抽事实（2026-11-09）──
   nsfwEnabled: Schema.boolean()
     .default(false)
     .description('全局成人内容总开关：关掉后不说露骨的话、不发诱惑图、不发娇喘、不记亲密事件'),

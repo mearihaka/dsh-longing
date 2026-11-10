@@ -25,29 +25,29 @@ import { clampFloat, num, round2 } from './curve.js'
  */
 export const EVENTS = {
   // ── 好的 ──
-  praise: { tone: 'good', dims: { affection: 1, lust: 1, shame: 1, resist: -0.5 }, note: '刚被夸过一句，心里还热着' },
-  comfort: { tone: 'good', dims: { affection: 1.5, fatigue: -2, resist: 1, shame: 0.5 }, note: '被哄了一会儿，绷着的劲松了' },
-  intimate: { tone: 'good', dims: { lust: 2, lewd: 1, shame: -1.5, affection: 1, resist: -1 }, note: '被碰过了，皮肤还记着' },
+  praise: { tone: 'good', dims: { affection: 0.6, lust: 1, shame: 1, resist: -0.5 }, note: '刚被夸过一句，心里还热着' },
+  comfort: { tone: 'good', dims: { affection: 0.9, fatigue: -2, resist: 1, shame: 0.5 }, note: '被哄了一会儿，绷着的劲松了' },
+  intimate: { tone: 'good', dims: { lust: 2, lewd: 1, shame: -1.5, affection: 0.6, resist: -1 }, note: '被碰过了，皮肤还记着' },
   desire: { tone: 'good', dims: { lust: 2.5, lewd: 1.5, shame: -2, resist: -0.5 }, note: '刚被要过，身体还没凉下来' },
-  protect: { tone: 'good', dims: { affection: 1.5, possess: 0.5, fatigue: -1 }, note: '被护着的时候，心是放在他那的' },
-  apologize: { tone: 'good', dims: { affection: 1, possess: -1, shame: 0.5 }, note: '他道过歉，气消了一半' },
-  promise: { tone: 'good', dims: { affection: 1.5, possess: 1, resist: 1 }, note: '被许诺过，愿意再信一次' },
+  protect: { tone: 'good', dims: { affection: 0.9, possess: 0.5, fatigue: -1 }, note: '被护着的时候，心是放在他那的' },
+  apologize: { tone: 'good', dims: { affection: 0.6, possess: -1, shame: 0.5 }, note: '他道过歉，气消了一半' },
+  promise: { tone: 'good', dims: { affection: 0.9, possess: 1, resist: 1 }, note: '被许诺过，愿意再信一次' },
   tease: { tone: 'good', dims: { lust: 1.5, lewd: 1, shame: -1, resist: -0.5 }, note: '被他撩了一下，还恼着也还想着' },
-  gift: { tone: 'good', dims: { affection: 1, possess: 0.5 }, note: '收了他的东西，有点拿人手短' },
-  coax: { tone: 'good', dims: { lust: 1.5, shame: -1, resist: -1, affection: 0.5 }, note: '被哄软了，本来绷着的' },
+  gift: { tone: 'good', dims: { affection: 0.6, possess: 0.5 }, note: '收了他的东西，有点拿人手短' },
+  coax: { tone: 'good', dims: { lust: 1.5, shame: -1, resist: -1, affection: 0.3 }, note: '被哄软了，本来绷着的' },
 
   // ── 不好的 ──
-  cold: { tone: 'bad', dims: { affection: -1, lust: -1.5, possess: 0.5, shame: 0.5 }, note: '被冷了一下，热乎劲退了' },
-  reject: { tone: 'bad', dims: { lust: -3, resist: 4, affection: -1, shame: 1.5, fatigue: 1 }, note: '刚被拒绝过，身体先凉了半截', scaleBy: 'rejectionPenalty' },
-  ignore: { tone: 'bad', dims: { affection: -1.5, possess: 1, lust: -1 }, note: '被晾了一会儿，心里存着事' },
-  mentionOther: { tone: 'bad', dims: { possess: 2.5, affection: -1, lust: -0.5, resist: -1 }, note: '他刚提到别人，心口一直发紧' },
-  compare: { tone: 'bad', grudge: 1, dims: { affection: -2, possess: 1.5, shame: -1, resist: 1 }, note: '被拿去跟人比了，脸上挂不住' },
-  blame: { tone: 'bad', grudge: 1, dims: { affection: -2, resist: 1.5, lust: -2, shame: -1.5, fatigue: 1 }, note: '被凶过，眼睛还酸着' },
-  lie: { tone: 'bad', grudge: 2, dims: { affection: -2.5, resist: 1, possess: 1 }, note: '发现他说了谎，他说的每句都听着不像' },
-  leave: { tone: 'bad', grudge: 3, dims: { affection: -4, possess: 2, lust: -2.5, resist: 2.5, shame: -1 }, note: '他刚说了要走，胸口空了一块' },
-  force: { tone: 'bad', grudge: 2, dims: { affection: -2.5, resist: 2, shame: -2, lust: -1, fatigue: 1.5 }, note: '他没听她的，现在还缩着' },
-  bodyShame: { tone: 'bad', grudge: 2, dims: { affection: -2.5, shame: 2.5, lust: -2 }, note: '身材被他嫌过，连站着都不自在' },
-  neglect: { tone: 'bad', dims: { affection: -1.5, possess: 1, resist: 0.5 }, note: '又被晾了一整天，连他是不是不要我了都开始想' },
+  cold: { tone: 'bad', dims: { affection: -1.4, lust: -1.5, possess: 0.5, shame: 0.5 }, note: '被冷了一下，热乎劲退了' },
+  reject: { tone: 'bad', dims: { lust: -3, resist: 4, affection: -1.4, shame: 1.5, fatigue: 1 }, note: '刚被拒绝过，身体先凉了半截', scaleBy: 'rejectionPenalty' },
+  ignore: { tone: 'bad', dims: { affection: -2.1, possess: 1, lust: -1 }, note: '被晾了一会儿，心里存着事' },
+  mentionOther: { tone: 'bad', dims: { possess: 2.5, affection: -1.4, lust: -0.5, resist: -1 }, note: '他刚提到别人，心口一直发紧' },
+  compare: { tone: 'bad', grudge: 1, dims: { affection: -2.8, possess: 1.5, shame: -1, resist: 1 }, note: '被拿去跟人比了，脸上挂不住' },
+  blame: { tone: 'bad', grudge: 1, dims: { affection: -2.8, resist: 1.5, lust: -2, shame: -1.5, fatigue: 1 }, note: '被凶过，眼睛还酸着' },
+  lie: { tone: 'bad', grudge: 2, dims: { affection: -3.5, resist: 1, possess: 1 }, note: '发现他说了谎，他说的每句都听着不像' },
+  leave: { tone: 'bad', grudge: 3, dims: { affection: -5.6, possess: 2, lust: -2.5, resist: 2.5, shame: -1 }, note: '他刚说了要走，胸口空了一块' },
+  force: { tone: 'bad', grudge: 2, dims: { affection: -3.5, resist: 2, shame: -2, lust: -1, fatigue: 1.5 }, note: '他没听她的，现在还缩着' },
+  bodyShame: { tone: 'bad', grudge: 2, dims: { affection: -3.5, shame: 2.5, lust: -2 }, note: '身材被他嫌过，连站着都不自在' },
+  neglect: { tone: 'bad', dims: { affection: -2.1, possess: 1, resist: 0.5 }, note: '又被晾了一整天，连他是不是不要我了都开始想' },
 
   // ── 事后：她自己登记「结束了」，接下来的 45 分钟是余韵 ──
   // 这不是一句文案，是一段被压过的时间：身体软、话变少、羞回来、想被搂着。
@@ -65,6 +65,16 @@ export const EVENTS = {
 
 /** 单次冲击的幅度上限（安全词除外）。一句话改不了关系，一晚上也不行。 */
 const MAX_DELTA = 6
+
+/**
+ * 软上限（2026-11-10）：到了这个值以后，正向增量按剩余空间打折。
+ * 只对「只会涨不会跌」的维度有意义 —— 目前就是 affection。
+ *
+ * 为什么需要：affectionGain 0.3/次、affectionDecay 0.3/小时，聊一次就抵消一小时衰减，
+ * 再加上 cap 100 硬夹，它冻在 97 附近，任何事件都推不动。
+ * 诊断实测：48.6 小时掉 2 分，回到 50 要 47.6 天。
+ */
+const SOFT_CAPS = { affection: 90 }
 /** 特例（做完 / 说停）的上限：给得比普通事件大，但不是无限。 */
 const MAX_STRONG = 30
 /** 同类事件的递减窗口。 */
@@ -107,7 +117,18 @@ export function applyEvent(prev, name, cfg = {}, now = Date.now()) {
 
   for (const [k, v] of Object.entries(def.dims)) {
     const raw = Number(v) * mult
-    const delta = def.strong ? Math.max(-MAX_STRONG, Math.min(MAX_STRONG, raw)) : Math.max(-MAX_DELTA, Math.min(MAX_DELTA, raw))
+    let delta = def.strong ? Math.max(-MAX_STRONG, Math.min(MAX_STRONG, raw)) : Math.max(-MAX_DELTA, Math.min(MAX_DELTA, raw))
+    // 2026-11-10 软上限：越接近 100，正向增量越难推动。
+    // 90 时全额，96 时 40%，99 时 10% —— 想上 100 可以，但要很多次。
+    // 是为了解决「affection 卡在 97、衰减和增益正好抵消」那个死结。
+    const soft = SOFT_CAPS[k]
+    if (soft !== undefined && delta > 0) {
+      const cur = num(s[k], 50)
+      if (cur > soft) {
+        const room = Math.max(0, (100 - cur) / (100 - soft)) // 1.0 → 0.0
+        delta = delta * Math.max(0.1, room)
+      }
+    }
     s[k] = clampFloat(num(s[k], 50) + delta)
     applied[k] = round2(delta)
   }

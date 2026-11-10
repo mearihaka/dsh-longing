@@ -204,7 +204,8 @@ test('注入块：好感低却占有高 → 说清那是控制欲不是喜欢', 
 test('一句夸奖：好感、性欲、羞耻都涨一点，理智掉一点', () => {
   const t0 = 1_800_000_000_000
   const r = applyEvent(base({ updatedAt: t0 }), 'praise', cfg(), t0)
-  assert.deepEqual(r.applied, { affection: 1, lust: 1, shame: 1, resist: -0.5 })
+  // 2026-11-10 数值平衡：正向 affection 1 → 0.6
+  assert.deepEqual(r.applied, { affection: 0.6, lust: 1, shame: 1, resist: -0.5 })
   assert.equal(r.mult, 1)
 })
 
@@ -217,16 +218,16 @@ test('同一句话一小时内重复会递减：1 → 0.5 → 0.33', () => {
     s = r.state
     m.push(r.applied.affection)
   }
-  assert.deepEqual(m, [1, 0.5, 0.33])
+  assert.deepEqual(m, [0.6, 0.3, 0.2])
 })
 
 test('骂十句不会把好感一次打穿：单次事件封顶 ±6', () => {
   const t0 = 1_800_000_000_000
   const s = base({ affection: 80, updatedAt: t0 })
   const r1 = applyEvent(s, 'leave', cfg(), t0)
-  assert.equal(r1.applied.affection, -4)
+  assert.equal(r1.applied.affection, -5.6)
   const r2 = applyEvent(r1.state, 'leave', cfg(), t0 + 60_000)
-  assert.equal(r2.applied.affection, -2) // 递减，不是再 −4
+  assert.equal(r2.applied.affection, -2.8) // 递减，不是再 −5.6
 })
 
 test('安全词是唯一不封顶的：说停就停，并且真的暂停', () => {

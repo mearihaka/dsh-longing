@@ -25,6 +25,7 @@ import {
   round2,
 } from './curve.js'
 import { EVENTS, recentEvents } from './events.js'
+import { behaviorLine } from './behavior.js'
 import { boundaryLine, deepestUnlocked } from './unlock.js'
 import { imageGate } from './proactive.js'
 // 2026-11-06：状态描写从「一条写死的句子」改成「按档抽碎片 + 随机处境」。
@@ -157,6 +158,21 @@ const SELF_TALK =
   '想完再说话，只说出口的那部分。]\n'
 
 /**
+ * 记账引导（2026-11-10）。
+ *
+ * 认事件的主力是 src/auto-event.js —— 通道把原话传进来，代码用正则认出来直接记，
+ * 她不用动手。这行只干一件事：**兜底**。
+ * 正则只覆盖 18 个事件的明确说法（"你真烦""别碰我""对不起"），
+ * 长句、反讽、复合情绪它认不出来 —— 那种时候由她自己补一笔。
+ *
+ * 早期版本这里是 330 字符的事件清单，实测十天后：
+ * 工具调用 1478 次，action=event 0 次。那是在教她做一件代码已经做完的事。
+ */
+const LEDGER_HINT = '[上面没体现出来的，你自己记一笔：action=event。]\n'
+
+// 2026-11-10：行为参数（见 behavior.js）—— 这一行最多 25 字，中性时是空串（省 token）。
+
+/**
  * @param {object} state 欲望状态
  * @param {object} cfg   面板/插件配置（见 config.js）
  * @param {{comfyUp?: boolean|null, channel?: string, now?: number}} [env]
@@ -220,7 +236,10 @@ export function buildBlock(state, cfg = {}, env = {}) {
 
   // 抽签种子（2026-11-06）：每分钟换一次，数值也参与。
   // 同一个数值档在 10 分钟内不会重复同一句，跨档自然换一批。
-  const seed = Math.floor(nowTs / 60_000) + Math.round(lust + lewd + possess + shame + resist + fatigue + affection)
+  // 2026-11-10：随机种子只跟时间走。
+  // 原来掺了七个维度的和 —— 于是「好感 +2」会换掉整句随机处境，
+  // 看起来像状态变了，其实是骰子重掷了一遍。两分钟换一次，不多不少。
+  const seed = Math.floor(nowTs / 120_000)
 
   // ── 低值阶梯：断点可配（negBreakpoints），0 直接冰冷陌生 ──
   const breaks = parseBreakpoints(cfg?.negBreakpoints ?? DEFAULT_BREAKS)
@@ -361,6 +380,8 @@ export function buildBlock(state, cfg = {}, env = {}) {
   const recent = recentEvents(state, nowTs)
   const notes = [...new Set(recent.map((e) => EVENTS[e.name]?.note).filter(Boolean))]
   const eventLine = notes.length ? `刚才的事还留在心里：${notes.join('；')}。\n` : ''
+  // 2026-11-10：状态不只改「说什么」，还改「怎么说」。中性时是空串。
+  const behaviorText = behaviorLine(state, cfg)
 
   // ── 被晾着了：这层不走数值，直接改语气 ──
   // 好感掉几点是账面上的事，真正发生的是「他很久没来了，我是不是被丢下了」。
@@ -443,6 +464,8 @@ export function buildBlock(state, cfg = {}, env = {}) {
       '身体不想被碰，话不往那方面带，心里也没有多余的亲近。\n' +
       '有事说事，说完就停；你说的每句话都按字面理解，不接玩笑、不给台阶。不是生气，是没有温度。\n' +
       '写法：1~2 句，像对助手交代事情。\n' +
+      eventLine +
+      LEDGER_HINT +
       SELF_TALK +
       '只有你能说话：不要替对方写台词、不要编对方的回复。'
     )
@@ -461,8 +484,10 @@ export function buildBlock(state, cfg = {}, env = {}) {
       '身体这一层是关着的：不想被碰，被靠近会躲，亲密的事像在应付别人。\n' +
       '但不是讨厌你——只是身体没反应。\n' +
       topicLine +
+      eventLine +
       zeroBlock +
       '写法：1~2 句，说完就停；只写你自己说的话，不要替对方写台词。\n' +
+      LEDGER_HINT +
       SELF_TALK.trimEnd()
     )
   }
@@ -483,6 +508,8 @@ export function buildBlock(state, cfg = {}, env = {}) {
       (topicLine || '') +
       '这时候你说一句好话，会比平时记得更久；要什么就直说，不用绕。\n' +
       '写法：一句一条，短、轻，可以说几句；只写你自己说的话，别推进新的事，别复述刚才做过什么。\n' +
+      eventLine +
+      LEDGER_HINT +
       SELF_TALK +
       '只有你能说话：不要替对方写台词、不要编对方的回复、不要生成两个人的对话。'
     )
@@ -502,6 +529,7 @@ export function buildBlock(state, cfg = {}, env = {}) {
       topicLine +
       tensionLine +
       eventLine +
+      behaviorText +
       thoughtLine +
     ownerLine +
       grudgeLine +
@@ -509,6 +537,7 @@ export function buildBlock(state, cfg = {}, env = {}) {
       lonelyLine +
       zeroBlock +
       '写法：1~2 句，别硬撩；只写你自己说的话，不要替对方写台词。\n' +
+      LEDGER_HINT +
       SELF_TALK.trimEnd()
     )
   }
@@ -531,12 +560,14 @@ export function buildBlock(state, cfg = {}, env = {}) {
       topicLine +
       tensionLine +
       eventLine +
+      behaviorText +
       thoughtLine +
     ownerLine +
       grudgeLine +
       firstLine +
       lonelyLine +
       zeroBlock +
+      LEDGER_HINT +
       SELF_TALK +
       TAIL_WRITE +
       '\n' +
@@ -713,6 +744,7 @@ export function buildBlock(state, cfg = {}, env = {}) {
     urgeLine +
     (dims.length ? dims.join('；') + '。\n' : '') +
     eventLine +
+    behaviorText +
     thoughtLine +
     ownerLine +
     grudgeLine +
@@ -731,6 +763,7 @@ export function buildBlock(state, cfg = {}, env = {}) {
     (cfg?.memoryEnabled ? '过程里如果发生了什么值得记住的，用 memory_save 记一条。\n' : '') +
     // 自述指令压在最后：所有状态、处境、话题都看完了，再让她自己想一遍。
     // 这一行是「想法由模型产生」的开关，删了它就退回念稿模式。
+    LEDGER_HINT +
     SELF_TALK +
     TAIL_WRITE +
     '\n不要复述或评论自己刚发出去的话，不要把你说过的话当成对方说的；一次只推进一步。\n只有你能说话：不要替对方写台词、不要编对方的回复、不要生成两个人的对话。'

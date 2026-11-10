@@ -184,7 +184,9 @@ export function pressureOf(state, cfg = {}) {
   const fatigue = num(s.fatigue, 20)
   const affection = num(s.affection, 50)
   const lust = num(s.lust, 30)
-  const cap = (v) => (off ? 100 : round2(clampFloat(v, 5, 100)))
+  // 2026-11-10：加第二个参数当地板。原来一律 5，导致 resist 被 possess 压到 28 以下、
+  // 贴着自己的天花板动不了（48.6 小时只从 30 掉到 26.6）。地板让「占有再满也留点理智」。
+  const cap = (v, lo = 5) => (off ? 100 : round2(clampFloat(v, lo, 100)))
   return {
     // 占有欲是执念，会烧掉自制
     resist: { cap: cap(210 - 2 * possess), by: 'possess', drift: off ? 0 : Math.max(0, lust - 80) * EVOLVE.resistBurn },
@@ -195,7 +197,7 @@ export function pressureOf(state, cfg = {}) {
     // 不熟的人不配有占有欲，那叫跟踪狂
     possess: { cap: cap(30 + affection * 0.9), by: 'affection', drift: 0 },
     // 占有太满会磨关系：病娇是不稳定状态，得靠好感撑着
-    affection: { cap: 100, by: '', drift: off ? 0 : Math.max(0, possess - 85) * EVOLVE.affectionWear },
+    affection: { cap: 100, softCap: 90, by: '', drift: off ? 0 : Math.max(0, possess - 85) * EVOLVE.affectionWear },
     lewd: { cap: 100, by: '', drift: 0 },
     fatigue: { cap: 100, by: '', drift: 0 },
   }
